@@ -113,6 +113,9 @@ export default function InviteRequestPage() {
       })
   }, [isMounted, inviteCode])
 
+  const [providerType, setProviderType] = React.useState<'stremio' | 'nuvio'>('stremio')
+  const [nuvioEmail, setNuvioEmail] = React.useState('')
+  const [nuvioPassword, setNuvioPassword] = React.useState('')
   const [authKey, setAuthKey] = React.useState<string | null>(null)
   const [oauthLinkGenerated, setOauthLinkGenerated] = React.useState(false)
   const [isGeneratingOAuth, setIsGeneratingOAuth] = React.useState(false)
@@ -376,11 +379,11 @@ export default function InviteRequestPage() {
     mutationFn: (authKey: string) => {
       const statusData = status as any
       const groupName = statusData?.groupName || undefined
-      
+
       // Use email/username from status if form state is missing (e.g., on "Request Renewed" page)
       const finalEmail = email || statusData?.email || ''
       const finalUsername = username || statusData?.username || ''
-      
+
       console.log('[InvitePage] completeMutation.mutationFn called with:', {
         inviteCode,
         email: finalEmail,
@@ -390,12 +393,23 @@ export default function InviteRequestPage() {
         usernameFromForm: username,
         usernameFromStatus: statusData?.username,
         authKeyLength: authKey?.length,
-        groupName
+        groupName,
+        providerType
       })
-      
+
       if (!finalEmail || !finalUsername) {
         throw new Error('Email and username are required')
       }
+
+      // Nuvio path: use email/password instead of authKey
+      if (providerType === 'nuvio') {
+        return invitationsAPI.complete(inviteCode, finalEmail, finalUsername, '', groupName, {
+          providerType: 'nuvio',
+          nuvioEmail,
+          nuvioPassword
+        })
+      }
+
       if (!authKey) {
         throw new Error('Auth key is required')
       }
@@ -569,6 +583,37 @@ export default function InviteRequestPage() {
       const errorMessage = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Failed to complete account creation'
       toast.error(errorMessage)
       throw error // Re-throw so StremioOAuthCard can handle it
+    }
+  }
+
+  const handleNuvioComplete = async (data: { providerType: 'nuvio'; nuvioEmail: string; nuvioUserId: string; nuvioPassword: string }) => {
+    const statusData = status as any
+    const finalEmail = email || statusData?.email || ''
+    const finalUsername = username || statusData?.username || ''
+    const groupName = statusData?.groupName || undefined
+
+    if (!finalEmail || !finalUsername) {
+      toast.error('Email and username are required. Please submit a request first.')
+      return
+    }
+
+    setIsCreatingUser(true)
+    try {
+      await invitationsAPI.complete(inviteCode, finalEmail, finalUsername, '', groupName, {
+        providerType: 'nuvio',
+        nuvioEmail: data.nuvioEmail,
+        nuvioPassword: data.nuvioPassword,
+      })
+      await queryClient.invalidateQueries({
+        queryKey: ['invite-status', inviteCode, email, username]
+      })
+      await refetchStatus()
+      toast.success('Account created successfully! You can now log in.')
+    } catch (error: any) {
+      const errorMessage = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Failed to complete account creation'
+      toast.error(errorMessage)
+    } finally {
+      setIsCreatingUser(false)
     }
   }
 
@@ -1106,9 +1151,10 @@ export default function InviteRequestPage() {
             oauthLinkGenerated={oauthLinkGenerated}
             oauthKeyVersion={oauthKeyVersion}
             isGeneratingOAuth={isGeneratingOAuth}
-            isCompleting={completeMutation.isPending}
+            isCompleting={completeMutation.isPending || isCreatingUser}
             onGenerateOAuth={handleGenerateOAuth}
             onAuthKey={handleOAuthAuthKey}
+            onNuvioComplete={handleNuvioComplete}
           />
         )
       }
@@ -1118,10 +1164,11 @@ export default function InviteRequestPage() {
           oauthLink={statusData?.oauthLink || null}
           oauthCode={statusData?.oauthCode || null}
           oauthExpiresAt={statusData?.oauthExpiresAt || null}
+          onNuvioComplete={handleNuvioComplete}
           oauthLinkGenerated={oauthLinkGenerated}
           oauthKeyVersion={oauthKeyVersion}
           isGeneratingOAuth={isGeneratingOAuth}
-          isCompleting={completeMutation.isPending}
+          isCompleting={completeMutation.isPending || isCreatingUser}
           onGenerateOAuth={handleGenerateOAuth}
           onAuthKey={handleOAuthAuthKey}
         />
