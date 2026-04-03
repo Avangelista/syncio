@@ -207,11 +207,18 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
   // Authenticate with OAuth and get/create user
   router.post('/authenticate', async (req, res) => {
     try {
-      const { authKey, nuvioEmail, nuvioPassword, nuvioUserId } = req.body;
+      const { authKey, nuvioEmail, nuvioPassword, nuvioUserId, nuvioRefreshToken: clientRefreshToken } = req.body;
 
       let user;
-      if (nuvioUserId) {
-        // Nuvio OAuth path — user already authenticated via TV login exchange
+      if (nuvioUserId && clientRefreshToken) {
+        // Nuvio OAuth path — verify refresh token is valid before accepting
+        const { refreshNuvioToken } = require('../providers/nuvioAuth');
+        try {
+          await refreshNuvioToken(clientRefreshToken);
+        } catch (e) {
+          return res.status(401).json({ error: 'Invalid or expired Nuvio token' });
+        }
+
         user = await prisma.user.findFirst({
           where: {
             nuvioUserId,
@@ -223,6 +230,9 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
             providerType: true, nuvioRefreshToken: true, nuvioUserId: true
           }
         });
+      } else if (nuvioUserId && !clientRefreshToken) {
+        // nuvioUserId alone is not sufficient — reject
+        return res.status(400).json({ error: 'Refresh token is required for Nuvio authentication' });
       } else if (nuvioEmail && nuvioPassword) {
         // Nuvio credentials path
         const { validateNuvioCredentials } = require('../providers/nuvioAuth');

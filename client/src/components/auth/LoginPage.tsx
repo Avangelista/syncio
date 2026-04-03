@@ -5,8 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useTheme } from '@/contexts/ThemeContext'
 import { publicAuthAPI, publicLibraryAPI } from '@/services/api'
 import StremioOAuthCard from './StremioOAuthCard'
-import NuvioLoginCard from './NuvioLoginCard'
-import NuvioOAuthCard from './NuvioOAuthCard'
+import { NuvioOAuthCard } from './NuvioOAuthCard'
 import { Eye, EyeOff, LogIn, User, Lock, Settings, Users } from 'lucide-react'
 import Image from 'next/image'
 import toast from 'react-hot-toast'
@@ -225,7 +224,7 @@ export default function LoginPage({
 
   const handleNuvioAuth = useCallback(async (data: { email: string; nuvioUserId: string; nuvioPassword?: string; refreshToken?: string }) => {
     try {
-      const result = await publicLibraryAPI.authenticateNuvio(data.email, data.nuvioPassword, data.nuvioUserId)
+      const result = await publicLibraryAPI.authenticateNuvio(data.email, data.nuvioPassword, data.nuvioUserId, data.refreshToken)
 
       if (result.error) {
         const errorCode = result.error
@@ -252,6 +251,7 @@ export default function LoginPage({
           userId: result.user.id,
           authKey: `nuvio:${data.nuvioUserId}`,
           providerType: 'nuvio',
+          nuvioRefreshToken: data.refreshToken,
           userInfo: result.user
         }
         localStorage.setItem('public-library-user', JSON.stringify(userData))

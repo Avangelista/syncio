@@ -8,7 +8,7 @@ import { useTheme } from '@/contexts/ThemeContext'
 import { getEntityColorStyles } from '@/utils/colorMapping'
 import UserAvatar from '@/components/ui/UserAvatar'
 import { getAddonIconUrl } from '@/utils/addonIcon'
-import ProviderBadge from '@/components/ui/ProviderBadge'
+import { ProviderBadge } from '@/components/ui/ProviderBadge'
 // ToggleSwitch and VersionChip are imported from '@/components/ui' above
 
 const MANIFEST_SUFFIX_REGEX = /\/manifest(\.[^/?#]+)?$/i

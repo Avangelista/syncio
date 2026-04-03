@@ -8,7 +8,7 @@ interface NuvioLoginCardProps {
   startButtonLabel?: string
 }
 
-export default function NuvioLoginCard({ onAuth, disabled = false, startButtonLabel = 'Sign in with Nuvio' }: NuvioLoginCardProps) {
+export function NuvioLoginCard({ onAuth, disabled = false, startButtonLabel = 'Sign in with Nuvio' }: NuvioLoginCardProps) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')

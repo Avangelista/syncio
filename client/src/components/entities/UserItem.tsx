@@ -3,7 +3,7 @@ import { useTheme } from '@/contexts/ThemeContext'
 import { SyncBadge } from '@/components/ui'
 import UserAvatar from '@/components/ui/UserAvatar'
 import { X } from 'lucide-react'
-import ProviderBadge from '@/components/ui/ProviderBadge'
+import { ProviderBadge } from '@/components/ui/ProviderBadge'
 
 interface UserItemProps {
   user: {

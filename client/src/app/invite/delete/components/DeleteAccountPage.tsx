@@ -3,7 +3,7 @@
 import React, { useState } from 'react'
 import { Trash2, CheckCircle, XCircle } from 'lucide-react'
 import { StremioOAuthCard } from '@/components/auth/StremioOAuthCard'
-import NuvioOAuthCard from '@/components/auth/NuvioOAuthCard'
+import { NuvioOAuthCard } from '@/components/auth/NuvioOAuthCard'
 
 interface DeleteUserPageProps {
   oauthLink: string | null
