@@ -118,6 +118,9 @@ prisma/migrations/dev.db*
 *.bak
 *.tmp
 
+# Build cache
+*.tsbuildinfo
+
 # Claude Code
 .mcp.json
 .claude/
