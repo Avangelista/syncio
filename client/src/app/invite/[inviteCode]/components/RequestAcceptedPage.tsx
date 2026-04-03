@@ -3,7 +3,7 @@
 import React from 'react'
 import { CheckCircle } from 'lucide-react'
 import { StremioOAuthCard } from '@/components/auth/StremioOAuthCard'
-import NuvioOAuthCard from '@/components/auth/NuvioOAuthCard'
+import { NuvioOAuthCard } from '@/components/auth/NuvioOAuthCard'
 
 interface RequestAcceptedPageProps {
   oauthLink: string | null
@@ -15,7 +15,7 @@ interface RequestAcceptedPageProps {
   isCompleting: boolean
   onGenerateOAuth: () => void
   onAuthKey: (authKey: string) => void
-  onNuvioComplete?: (data: { providerType: 'nuvio'; nuvioEmail: string; nuvioUserId: string; nuvioPassword: string }) => void
+  onNuvioComplete?: (data: { providerType: 'nuvio'; nuvioEmail: string; nuvioUserId: string; nuvioPassword?: string; refreshToken?: string }) => void
 }
 
 export function RequestAcceptedPage({
@@ -85,7 +85,7 @@ export function RequestAcceptedPage({
                     providerType: 'nuvio',
                     nuvioEmail: data.email,
                     nuvioUserId: data.nuvioUserId,
-                    nuvioPassword: '',
+                    nuvioPassword: undefined,
                     refreshToken: data.refreshToken,
                   })
                 }

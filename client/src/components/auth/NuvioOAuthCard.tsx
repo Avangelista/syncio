@@ -17,7 +17,7 @@ interface NuvioOAuthCardProps {
   buttonStyle?: React.CSSProperties
 }
 
-export default function NuvioOAuthCard({
+export function NuvioOAuthCard({
   active = true,
   autoStart = true,
   onAuth,
@@ -82,12 +82,14 @@ export default function NuvioOAuthCard({
     }
   }, [disabled, isCreating, resetFlow])
 
-  // Auto-start
+  // Auto-start on mount (intentionally runs once when active+autoStart)
+  const hasAutoStarted = useRef(false)
   useEffect(() => {
-    if (active && autoStart && !webUrl && !isCreating && !isPolling && !isCompleting) {
+    if (active && autoStart && !hasAutoStarted.current) {
+      hasAutoStarted.current = true
       startFlow()
     }
-  }, [active, autoStart]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active, autoStart, startFlow])
 
   // Polling effect
   useEffect(() => {

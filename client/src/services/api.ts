@@ -1173,11 +1173,12 @@ export const publicLibraryAPI = {
   },
 
   // Authenticate with Nuvio credentials or OAuth userId
-  authenticateNuvio: async (nuvioEmail: string, nuvioPassword?: string, nuvioUserId?: string): Promise<any> => {
+  authenticateNuvio: async (nuvioEmail: string, nuvioPassword?: string, nuvioUserId?: string, nuvioRefreshToken?: string): Promise<any> => {
     const body: any = {}
     if (nuvioUserId) body.nuvioUserId = nuvioUserId
     if (nuvioEmail) body.nuvioEmail = nuvioEmail
     if (nuvioPassword) body.nuvioPassword = nuvioPassword
+    if (nuvioRefreshToken) body.nuvioRefreshToken = nuvioRefreshToken
     const response: AxiosResponse<any> = await api.post(`/public-library/authenticate`, body)
     return response.data
   },

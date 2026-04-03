@@ -10,7 +10,7 @@ const ICONS: Record<string, string> = {
   nuvio: '/assets/nuvio-icon.png',
 }
 
-export default function ProviderBadge({ providerType, size = 'sm' }: ProviderBadgeProps) {
+export function ProviderBadge({ providerType, size = 'sm' }: ProviderBadgeProps) {
   if (!providerType || !ICONS[providerType]) return null
   const px = size === 'sm' ? 16 : 20
   return (

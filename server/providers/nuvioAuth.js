@@ -97,7 +97,8 @@ async function startNuvioTvLogin() {
   })
   if (!signupRes.ok) {
     const body = await signupRes.text().catch(() => '')
-    throw new Error(`Nuvio anonymous signup failed (${signupRes.status}): ${body}`)
+    console.error(`Nuvio anonymous signup failed (${signupRes.status}):`, body)
+    throw new Error('Failed to start Nuvio login session')
   }
   const signupData = await signupRes.json()
   const anonToken = signupData.access_token
@@ -119,7 +120,8 @@ async function startNuvioTvLogin() {
   })
   if (!startRes.ok) {
     const body = await startRes.text().catch(() => '')
-    throw new Error(`Nuvio TV login start failed (${startRes.status}): ${body}`)
+    console.error(`Nuvio TV login start failed (${startRes.status}):`, body)
+    throw new Error('Failed to start Nuvio login session')
   }
   const startData = await startRes.json()
   const session = Array.isArray(startData) ? startData[0] : startData
@@ -146,7 +148,8 @@ async function pollNuvioTvLogin(code, deviceNonce, anonToken) {
   })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new Error(`Nuvio TV login poll failed (${res.status}): ${body}`)
+    console.error(`Nuvio TV login poll failed (${res.status}):`, body)
+    throw new Error('Failed to poll Nuvio login session')
   }
   const data = await res.json()
   const result = Array.isArray(data) ? data[0] : data
@@ -169,7 +172,8 @@ async function exchangeNuvioTvLogin(code, deviceNonce, anonToken) {
   })
   if (!res.ok) {
     const body = await res.text().catch(() => '')
-    throw new Error(`Nuvio TV login exchange failed (${res.status}): ${body}`)
+    console.error(`Nuvio TV login exchange failed (${res.status}):`, body)
+    throw new Error('Failed to complete Nuvio login')
   }
   const data = await res.json()
   const payload = parseJwtPayload(data.access_token)
