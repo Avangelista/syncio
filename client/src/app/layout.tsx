@@ -30,7 +30,7 @@ export default function RootLayout({
         <title>Syncio</title>
         <meta name="application-name" content="Syncio" />
         <meta name="apple-mobile-web-app-title" content="Syncio" />
-        <meta name="description" content="Syncio - Stremio Group Manager" />
+        <meta name="description" content="Syncio - Addon Group Manager" />
         {/* Single theme-color; ThemeProvider updates it dynamically */}
         <meta name="theme-color" content="#111827" />
         {/* Pre-init theme to avoid flash and fix overscroll background before paint */}
@@ -65,7 +65,6 @@ export default function RootLayout({
         <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
         <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
         <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#6B46C1" />
-        <link rel="manifest" href="/site.webmanifest" />
       </head>
       <body className={inter.className}>
         <QueryClientProvider client={queryClient}>

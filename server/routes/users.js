@@ -73,7 +73,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error checking user existence:', error)
-      return res.status(500).json({ error: error?.message || 'Failed to check user existence' })
+      return res.status(500).json({ error: 'Failed to check user existence' })
     }
   })
 
@@ -136,6 +136,8 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
           groups: groups.length,
           lastActive: null,
           hasStremioConnection: !!user.stremioAuthKey,
+          hasNuvioConnection: !!(user.nuvioUserId && user.nuvioRefreshToken),
+          hasProviderConnection: !!user.stremioAuthKey || !!(user.nuvioUserId && user.nuvioRefreshToken),
           providerType: user.providerType || 'stremio',
           isActive: user.isActive,
           excludedAddons: excludedAddons,
@@ -334,7 +336,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error fetching watch time:', error)
-      res.status(500).json({ error: 'Failed to fetch watch time', message: error.message })
+      res.status(500).json({ error: 'Failed to fetch watch time' })
     }
   })
 
@@ -490,7 +492,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error fetching top items:', error)
-      res.status(500).json({ error: 'Failed to fetch top items', message: error.message })
+      res.status(500).json({ error: 'Failed to fetch top items' })
     }
   })
 
@@ -649,7 +651,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error fetching streaks:', error)
-      res.status(500).json({ error: 'Failed to fetch streaks', message: error.message })
+      res.status(500).json({ error: 'Failed to fetch streaks' })
     }
   })
 
@@ -845,7 +847,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error fetching velocity:', error)
-      res.status(500).json({ error: 'Failed to fetch velocity', message: error.message })
+      res.status(500).json({ error: 'Failed to fetch velocity' })
     }
   })
 
@@ -1099,7 +1101,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json(transformedUser)
     } catch (error) {
       console.error('Error updating user:', error)
-      res.status(500).json({ error: 'Failed to update user', details: error?.message })
+      res.status(500).json({ error: 'Failed to update user' })
     }
   });
 
@@ -1135,7 +1137,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       return res.json({ message: 'Test message sent' })
     } catch (error) {
       console.error('Failed to send user webhook test:', error)
-      return res.status(500).json({ message: 'Failed to send test message', error: error?.message })
+      return res.status(500).json({ message: 'Failed to send test message' })
     }
   });
 
@@ -1162,7 +1164,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json(updatedUser)
     } catch (error) {
       console.error('Error enabling user:', error)
-      res.status(500).json({ error: 'Failed to enable user', details: error?.message })
+      res.status(500).json({ error: 'Failed to enable user' })
     }
   });
 
@@ -1189,7 +1191,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json(updatedUser)
     } catch (error) {
       console.error('Error disabling user:', error)
-      res.status(500).json({ error: 'Failed to disable user', details: error?.message })
+      res.status(500).json({ error: 'Failed to disable user' })
     }
   });
 
@@ -1343,14 +1345,14 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
 
       if (!result.success) {
         console.error('❌ getUserAddons failed:', result.error)
-        return res.status(500).json({ message: 'Failed to fetch Stremio addons', error: result.error })
+        return res.status(500).json({ message: 'Failed to fetch addons', error: result.error })
       }
 
       // Removed verbose raw addons log to reduce noise
       res.json(result.addons)
     } catch (error) {
-      console.error('❌ Error fetching raw Stremio addons:', error)
-      res.status(500).json({ message: 'Failed to fetch raw Stremio addons', error: error?.message })
+      console.error('❌ Error fetching raw addons:', error)
+      res.status(500).json({ message: 'Failed to fetch raw addons' })
     }
   });
 
@@ -1478,7 +1480,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ addons: result.addons })
     } catch (error) {
       console.error('❌ Error fetching desired addons:', error)
-      res.status(500).json({ message: 'Failed to fetch desired addons', error: error?.message })
+      res.status(500).json({ message: 'Failed to fetch desired addons' })
     }
   });
 
@@ -1513,7 +1515,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ addons: groupAddons })
     } catch (error) {
       console.error('❌ Error fetching group addons:', error)
-      res.status(500).json({ message: 'Failed to fetch group addons', error: error?.message })
+      res.status(500).json({ message: 'Failed to fetch group addons' })
     }
   });
 
@@ -1607,7 +1609,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       }
 
       // Individual user sync - no reload needed, just sync
-      const result = await syncUserAddons(prisma, id, [], unsafeMode, req, decrypt, getAccountId, useCustomFields)
+      const result = await syncUserAddons(prisma, id, [], unsafeMode, req, decrypt, getAccountId, useCustomFields, createProvider)
 
       if (!result.success) {
         return res.status(400).json({ message: result.error || 'Failed to sync user' })
@@ -1621,7 +1623,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error in sync endpoint:', error)
-      return res.status(500).json({ message: 'Failed to sync user', error: error?.message })
+      return res.status(500).json({ message: 'Failed to sync user' })
     }
   });
 
@@ -1654,11 +1656,11 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       
       // Get all enabled users
       const users = await prisma.user.findMany({
-        where: { isActive: true }
+        where: { isActive: true, accountId: getAccountId(req) }
       })
-      
+
       if (users.length === 0) {
-        return res.json({ 
+        return res.json({
           message: 'No enabled users found to sync',
           syncedCount: 0,
           totalUsers: 0
@@ -1677,7 +1679,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
           debug.log(`🔄 Syncing user: ${user.username || user.email}`)
           
           // Use the reusable sync function
-          const syncResult = await syncUserAddons(prisma, user.id, [], unsafeMode, req, decrypt, getAccountId, useCustomFields)
+          const syncResult = await syncUserAddons(prisma, user.id, [], unsafeMode, req, decrypt, getAccountId, useCustomFields, createProvider)
           
           if (syncResult.success) {
             syncedCount++
@@ -1713,7 +1715,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error syncing all users:', error)
-      res.status(500).json({ message: 'Failed to sync all users', error: error?.message })
+      res.status(500).json({ message: 'Failed to sync all users' })
     }
   });
 
@@ -1903,7 +1905,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error in reload addons endpoint:', error)
-      res.status(500).json({ message: 'Failed to reload user addons', error: error?.message })
+      res.status(500).json({ message: 'Failed to reload user addons' })
     }
   })
 
@@ -1984,11 +1986,11 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
         })
       } catch (error) {
         console.error('Error adding Stremio addons:', error)
-        res.status(500).json({ message: 'Failed to add addons', error: error?.message })
+        res.status(500).json({ message: 'Failed to add addons' })
       }
     } catch (error) {
       console.error('Error in add Stremio addons endpoint:', error)
-      res.status(500).json({ message: 'Failed to add addons', error: error?.message })
+      res.status(500).json({ message: 'Failed to add addons' })
     }
   })
 
@@ -2008,7 +2010,10 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
         where: {
           accountId: accountId,
           isActive: true,
-          stremioAuthKey: { not: null }
+          OR: [
+            { stremioAuthKey: { not: null } },
+            { nuvioUserId: { not: null } }
+          ]
         },
         select: {
           id: true,
@@ -2146,7 +2151,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error fetching combined library:', error)
-      res.status(500).json({ message: 'Failed to fetch combined library', error: error?.message })
+      res.status(500).json({ message: 'Failed to fetch combined library' })
     }
   })
 
@@ -2190,7 +2195,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ status: data.status || null })
     } catch (error) {
       console.error('Error getting like/love status:', error)
-      res.status(500).json({ message: 'Failed to get like/love status', error: error?.message })
+      res.status(500).json({ message: 'Failed to get like/love status' })
     }
   })
 
@@ -2238,7 +2243,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ success: true, data })
     } catch (error) {
       console.error('Error updating like/love status:', error)
-      res.status(500).json({ message: 'Failed to update like/love status', error: error?.message })
+      res.status(500).json({ message: 'Failed to update like/love status' })
     }
   })
 
@@ -2274,7 +2279,11 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
 
       const provider = createProvider(user, { decrypt, req })
       if (!provider) {
-        return res.status(400).json({ message: 'User not connected to Stremio' })
+        return res.status(400).json({ message: 'User not connected to a provider' })
+      }
+
+      if (user.providerType === 'nuvio') {
+        return res.status(400).json({ message: 'Library toggle is not supported for this provider' })
       }
 
       const authKeyPlain = decrypt(user.stremioAuthKey, req)
@@ -2300,7 +2309,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
           success: false,
           successCount: 0,
           errorCount: items.length,
-          results: items.map(item => ({ itemId: item.itemId, success: false, error: error?.message }))
+          results: items.map(item => ({ itemId: item.itemId, success: false }))
         })
       }
 
@@ -2348,7 +2357,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error toggling library items:', error)
-      res.status(500).json({ error: 'Failed to toggle library items', message: error?.message })
+      res.status(500).json({ error: 'Failed to toggle library items' })
     }
   })
 
@@ -2383,7 +2392,11 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
 
       const provider = createProvider(user, { decrypt, req })
       if (!provider) {
-        return res.status(400).json({ error: 'User not connected to Stremio' })
+        return res.status(400).json({ error: 'User not connected to a provider' })
+      }
+
+      if (user.providerType === 'nuvio') {
+        return res.status(400).json({ message: 'Library toggle is not supported for this provider' })
       }
 
       const authKeyPlain = decrypt(user.stremioAuthKey, req)
@@ -2414,7 +2427,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error deleting library item:', error)
-      res.status(500).json({ error: 'Failed to delete library item', message: error?.message })
+      res.status(500).json({ error: 'Failed to delete library item' })
     }
   })
 
@@ -2451,7 +2464,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
 
       const provider = createProvider(user, { decrypt, req })
       if (!provider) {
-        return res.status(400).json({ error: 'User not connected to Stremio' })
+        return res.status(400).json({ error: 'User not connected to a provider' })
       }
 
       // Get all library items
@@ -2481,7 +2494,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json(library)
     } catch (error) {
       console.error('Error backing up library:', error)
-      res.status(500).json({ error: 'Failed to backup library', message: error?.message })
+      res.status(500).json({ error: 'Failed to backup library' })
     }
   })
 
@@ -2510,7 +2523,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
 
       const provider = createProvider(user, { decrypt, req })
       if (!provider) {
-        return res.status(400).json({ message: 'User not connected to Stremio' })
+        return res.status(400).json({ message: 'User not connected to a provider' })
       }
 
       if (!user.isActive) {
@@ -2623,11 +2636,11 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
         })
       } catch (error) {
         console.error('Error fetching library items:', error)
-        res.status(500).json({ message: 'Failed to fetch library items', error: error?.message })
+        res.status(500).json({ message: 'Failed to fetch library items' })
       }
     } catch (error) {
       console.error('Error in get library endpoint:', error)
-      res.status(500).json({ message: 'Failed to fetch library items', error: error?.message })
+      res.status(500).json({ message: 'Failed to fetch library items' })
     }
   })
 
@@ -2656,7 +2669,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
 
       const provider = createProvider(user, { decrypt, req })
       if (!provider) {
-        return res.status(400).json({ message: 'User not connected to Stremio' })
+        return res.status(400).json({ message: 'User not connected to a provider' })
       }
 
       if (!user.isActive) {
@@ -2672,11 +2685,11 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
         })
       } catch (error) {
         console.error('Error clearing Stremio addons:', error)
-        res.status(500).json({ message: 'Failed to clear addons', error: error?.message })
+        res.status(500).json({ message: 'Failed to clear addons' })
       }
     } catch (error) {
       console.error('Error in clear Stremio addons endpoint:', error)
-      res.status(500).json({ message: 'Failed to clear addons', error: error?.message })
+      res.status(500).json({ message: 'Failed to clear addons' })
     }
   })
 
@@ -2708,7 +2721,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
 
       const provider = createProvider(user, { decrypt, req })
       if (!provider) {
-        return res.status(400).json({ message: 'User not connected to Stremio' })
+        return res.status(400).json({ message: 'User not connected to a provider' })
       }
 
       if (!user.isActive) {
@@ -2774,126 +2787,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       return res.json({ message: 'Addon removed from Stremio account successfully' })
     } catch (error) {
       console.error('Error removing Stremio addon:', error)
-      return res.status(502).json({ message: 'Failed to remove addon from Stremio', error: error?.message })
-    }
-  })
-
-  // Connect user with auth key
-  router.post('/:id/connect-stremio-authkey', async (req, res) => {
-    try {
-      const { id } = req.params
-      const { authKey } = req.body
-
-      if (!authKey) {
-        return res.status(400).json({ message: 'Auth key is required' })
-      }
-
-      const user = await prisma.user.findUnique({
-        where: { 
-          id,
-          accountId: getAccountId(req)
-        }
-      })
-
-      if (!user) {
-        return responseUtils.notFound(res, 'User')
-      }
-
-      // Encrypt and store the auth key
-      const encryptedAuthKey = encrypt(authKey, req)
-
-      await prisma.user.update({
-        where: { 
-          id,
-          accountId: getAccountId(req)
-        },
-        data: {
-          stremioAuthKey: encryptedAuthKey,
-          isActive: true
-        }
-      })
-
-      res.json({ message: 'Stremio connection established successfully' })
-    } catch (error) {
-      console.error('Error connecting user with auth key:', error)
-      res.status(500).json({ message: 'Failed to connect user', error: error?.message })
-    }
-  })
-
-  // Clear Stremio credentials
-  router.post('/:id/clear-stremio-credentials', async (req, res) => {
-    try {
-      const { id } = req.params
-
-      const user = await prisma.user.findUnique({
-        where: { 
-          id,
-          accountId: getAccountId(req)
-        }
-      })
-
-      if (!user) {
-        return responseUtils.notFound(res, 'User')
-      }
-
-      // Clear Stremio credentials
-      await prisma.user.update({
-        where: { 
-          id,
-          accountId: getAccountId(req)
-        },
-        data: {
-          stremioAuthKey: null,
-          isActive: false // Disconnect user since Stremio credentials are cleared
-        }
-      })
-
-      res.json({ message: 'Stremio credentials cleared successfully' })
-    } catch (error) {
-      console.error('Error clearing Stremio credentials:', error)
-      res.status(500).json({ message: 'Failed to clear Stremio credentials', error: error?.message })
-    }
-  })
-
-  // Connect existing user to Stremio
-  router.post('/:id/connect-stremio', async (req, res) => {
-    try {
-      const { id } = req.params
-      const { password, authKey } = req.body
-
-      if (!password || !authKey) {
-        return res.status(400).json({ message: 'Password and authKey are required' })
-      }
-
-      const user = await prisma.user.findUnique({
-        where: { 
-          id,
-          accountId: getAccountId(req)
-        }
-      })
-
-      if (!user) {
-        return responseUtils.notFound(res, 'User')
-      }
-
-      // Encrypt and store the auth key
-      const encryptedAuthKey = encrypt(authKey, req)
-
-      await prisma.user.update({
-        where: { 
-          id,
-          accountId: getAccountId(req)
-        },
-        data: {
-          stremioAuthKey: encryptedAuthKey,
-          isActive: true
-        }
-      })
-
-      res.json({ message: 'Stremio connection established successfully' })
-    } catch (error) {
-      console.error('Error connecting user to Stremio:', error)
-      res.status(500).json({ message: 'Failed to connect user to Stremio', error: error?.message })
+      return res.status(502).json({ message: 'Failed to remove addon from Stremio' })
     }
   })
 
@@ -3046,7 +2940,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error importing addons:', error)
-      res.status(500).json({ message: 'Failed to import addons', error: error?.message })
+      res.status(500).json({ message: 'Failed to import addons' })
     }
   })
 
@@ -3118,95 +3012,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error reordering Stremio addons:', error)
-      res.status(500).json({ message: 'Failed to reorder addons', error: error?.message })
-    }
-  });
-
-  // Protect addon
-  router.post('/:id/protect-addon', async (req, res) => {
-    try {
-      const { id } = req.params
-      const { addonId, manifestUrl } = req.body
-      const { unsafe } = req.query
-      
-      
-      // Resolve target URL to protect/unprotect
-      let targetUrl = null
-      try {
-        if (typeof manifestUrl === 'string' && manifestUrl.trim()) {
-          targetUrl = manifestUrl.trim()
-        } else if (typeof addonId === 'string' && /^https?:\/\//i.test(addonId)) {
-          targetUrl = addonId.trim()
-        } else if (typeof addonId === 'string' && addonId.trim()) {
-          const found = await prisma.addon.findFirst({
-            where: { id: addonId.trim(), accountId: getAccountId(req) }
-          })
-          if (found && found.manifestUrl) {
-            try { targetUrl = decrypt(found.manifestUrl, req) } catch { targetUrl = found.manifestUrl }
-          }
-        }
-      } catch {}
-
-      // Check if this is a default addon in safe mode (match by ID or URL)
-      const isDefaultAddon = (typeof addonId === 'string' && defaultAddons.ids.includes(addonId)) ||
-                             (typeof targetUrl === 'string' && defaultAddons.manifestUrls.includes(targetUrl)) ||
-                             (typeof addonId === 'string' && defaultAddons.names.some(name => addonId.includes(name)))
-      
-      if (isDefaultAddon && unsafe !== 'true') {
-        return res.status(403).json({ 
-          error: 'This addon is protected by default and cannot be unprotected in safe mode',
-          isDefaultAddon: true
-        })
-      }
-      
-      // Get current user with protected addons
-      const user = await prisma.user.findUnique({
-        where: { 
-          id,
-          accountId: getAccountId(req)
-        },
-        select: { protectedAddons: true }
-      })
-      
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' })
-      }
-      
-      // Parse current protected addons (stored as encrypted manifest URLs)
-      let currentEncrypted = []
-      try {
-        currentEncrypted = user.protectedAddons ? JSON.parse(user.protectedAddons) : []
-      } catch (e) {
-        console.warn('Failed to parse protected addons:', e)
-        currentEncrypted = []
-      }
-      // Decrypt existing to URLs for comparison
-      const currentUrls = currentEncrypted.map((enc) => { try { return decrypt(enc, req) } catch { return null } }).filter((u) => typeof u === 'string' && u.trim())
-
-      if (!targetUrl || !/^https?:\/\//i.test(String(targetUrl))) {
-        return res.status(400).json({ error: 'manifestUrl required or resolvable' })
-      }
-
-      const isCurrentlyProtected = currentUrls.includes(targetUrl)
-      const nextUrls = isCurrentlyProtected ? currentUrls.filter((u) => u !== targetUrl) : [...currentUrls, targetUrl]
-      const nextEncrypted = nextUrls.map((u) => { try { return encrypt(u, req) } catch { return null } }).filter(Boolean)
-
-      // Update user (store encrypted URLs)
-      await prisma.user.update({
-        where: { id },
-        data: {
-          protectedAddons: JSON.stringify(nextEncrypted)
-        }
-      })
-      
-      res.json({ 
-        message: `Addon ${isCurrentlyProtected ? 'unprotected' : 'protected'} successfully`,
-        isProtected: !isCurrentlyProtected,
-        protectedAddons: nextUrls
-      })
-    } catch (error) {
-      console.error('Error toggling protect addon:', error)
-      res.status(500).json({ error: 'Failed to toggle protect addon' })
+      res.status(500).json({ message: 'Failed to reorder addons' })
     }
   });
 
@@ -3247,7 +3053,9 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
         where: { id },
         data: {
           stremioAuthKey: encryptedAuthKey,
-          stremioAddons: JSON.stringify(addonsData || {}),
+          nuvioRefreshToken: null,
+          nuvioUserId: null,
+          providerType: 'stremio',
           email: verifiedUser?.email ? verifiedUser.email.toLowerCase() : undefined,
           isActive: true, // Reconnect user since they now have valid Stremio connection
         },
@@ -3268,8 +3076,8 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       const { id } = req.params;
       
       // Use the middleware-protected user (ensures account isolation)
-      const existingUser = await prisma.user.findUnique({
-        where: { id }
+      const existingUser = await prisma.user.findFirst({
+        where: { id, accountId: getAccountId(req) }
       });
 
       if (!existingUser) {
@@ -3278,13 +3086,12 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
 
       // Clear Stremio credentials
       const updatedUser = await prisma.user.update({
-        where: { 
+        where: {
           id,
           accountId: getAccountId(req)
         },
         data: {
           stremioAuthKey: null,
-          stremioAddons: null,
           isActive: false, // Disconnect user since Stremio credentials are cleared
         },
       });
@@ -3292,9 +3099,65 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ message: 'Stremio credentials cleared successfully', userId: updatedUser.id });
     } catch (error) {
       console.error('Error clearing Stremio credentials:', error);
-      res.status(500).json({ message: 'Failed to clear Stremio credentials', error: error?.message });
+      res.status(500).json({ message: 'Failed to clear Stremio credentials' });
     }
   });
+
+  router.post('/:id/clear-nuvio-credentials', async (req, res) => {
+    try {
+      const { id } = req.params
+      const accountId = getAccountId(req)
+      const existingUser = await prisma.user.findFirst({
+        where: { id, accountId }
+      })
+      if (!existingUser) return res.status(404).json({ message: 'User not found' })
+      await prisma.user.update({
+        where: { id },
+        data: { nuvioRefreshToken: null, nuvioUserId: null, isActive: false }
+      })
+      res.json({ message: 'Nuvio credentials cleared', userId: id })
+    } catch (error) {
+      console.error('Error clearing Nuvio credentials:', error)
+      res.status(500).json({ message: 'Failed to clear Nuvio credentials' })
+    }
+  })
+
+  router.post('/:id/connect-nuvio', async (req, res) => {
+    try {
+      const { id } = req.params
+      const { providerUserId: nuvioUserId, refreshToken, email } = req.body
+      if (!nuvioUserId || !refreshToken) {
+        return res.status(400).json({ message: 'providerUserId and refreshToken are required' })
+      }
+      // Verify refresh token actually belongs to the claimed user
+      const { refreshNuvioToken, parseJwtPayload } = require('../providers/nuvioAuth')
+      const tokenResult = await refreshNuvioToken(refreshToken)
+      const payload = parseJwtPayload(tokenResult.access_token)
+      if (!payload || payload.sub !== nuvioUserId) {
+        return res.status(403).json({ message: 'Token does not match the claimed user identity' })
+      }
+      const accountId = getAccountId(req)
+      const user = await prisma.user.findFirst({ where: { id, accountId } })
+      if (!user) return res.status(404).json({ message: 'User not found' })
+      // Use the rotated refresh token from verification
+      const verifiedRefreshToken = tokenResult.refresh_token || refreshToken
+      await prisma.user.update({
+        where: { id },
+        data: {
+          providerType: 'nuvio',
+          nuvioRefreshToken: encrypt(verifiedRefreshToken, req),
+          nuvioUserId,
+          stremioAuthKey: null,
+          email: email || undefined,
+          isActive: true
+        }
+      })
+      res.json({ message: 'Nuvio connection established', userId: id })
+    } catch (error) {
+      console.error('Error connecting user to Nuvio:', error)
+      res.status(500).json({ message: 'Failed to connect user to Nuvio' })
+    }
+  })
 
   // Connect existing user to Stremio
   router.post('/:id/connect-stremio', async (req, res) => {
@@ -3455,7 +3318,9 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
           email: email,
           username: username || userData?.username || email.split('@')[0],
           stremioAuthKey: encryptedAuthKey,
-          stremioAddons: JSON.stringify(addonsData || {}),
+          providerType: 'stremio',
+          nuvioRefreshToken: null,
+          nuvioUserId: null,
           isActive: true, // Re-enable the user after successful reconnection
         }
       });
@@ -3472,9 +3337,8 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       
     } catch (error) {
       console.error('Stremio connection error:', error);
-      return res.status(500).json({ 
-        message: 'Failed to connect to Stremio', 
-        error: error?.message || 'Unknown error' 
+      return res.status(500).json({
+        message: 'Failed to connect to Stremio'
       });
     }
   });
@@ -3924,7 +3788,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       return res.json({ message: 'Webhook sent successfully', sent: true })
     } catch (error) {
       console.error('Failed to send invite webhook:', error)
-      return res.status(500).json({ message: 'Failed to send webhook', error: error?.message })
+      return res.status(500).json({ message: 'Failed to send webhook' })
     }
   })
 
@@ -3969,7 +3833,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error('Error updating user activity visibility:', error)
-      res.status(500).json({ error: 'Failed to update activity visibility', details: error?.message })
+      res.status(500).json({ error: 'Failed to update activity visibility' })
     }
   })
 
@@ -4001,7 +3865,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json(shares)
     } catch (error) {
       console.error(`Failed to get shares for user ${req.params.userId}:`, error)
-      res.status(500).json({ error: 'Failed to get shares', message: error?.message })
+      res.status(500).json({ error: 'Failed to get shares' })
     }
   })
 
@@ -4028,7 +3892,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ received: shares.received })
     } catch (error) {
       console.error(`Failed to get received shares for user ${req.params.userId}:`, error)
-      res.status(500).json({ error: 'Failed to get received shares', message: error?.message })
+      res.status(500).json({ error: 'Failed to get received shares' })
     }
   })
 
@@ -4055,7 +3919,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ members: groupMembers })
     } catch (error) {
       console.error(`Failed to get group members for user ${req.params.userId}:`, error)
-      res.status(500).json({ error: 'Failed to get group members', message: error?.message })
+      res.status(500).json({ error: 'Failed to get group members' })
     }
   })
 
@@ -4230,7 +4094,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       })
     } catch (error) {
       console.error(`Failed to share items for user ${req.params.userId}:`, error)
-      res.status(500).json({ error: 'Failed to share items', message: error?.message })
+      res.status(500).json({ error: 'Failed to share items' })
     }
   })
 
@@ -4261,7 +4125,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ success: true, message: 'Share removed' })
     } catch (error) {
       console.error(`Failed to remove share ${req.params.shareId} for user ${req.params.userId}:`, error)
-      res.status(500).json({ error: 'Failed to remove share', message: error?.message })
+      res.status(500).json({ error: 'Failed to remove share' })
     }
   })
 
@@ -4292,7 +4156,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       res.json({ success: true, message: 'Share marked as viewed' })
     } catch (error) {
       console.error(`Failed to mark share ${req.params.shareId} as viewed for user ${req.params.userId}:`, error)
-      res.status(500).json({ error: 'Failed to mark share as viewed', message: error?.message })
+      res.status(500).json({ error: 'Failed to mark share as viewed' })
     }
   })
 
@@ -4331,8 +4195,7 @@ const { manifestHash } = require('../utils/hashing')
 // Import the shared reload addon helper at module level
 const { reloadAddon } = require('./addons')
 
-// Import createProvider for standalone syncUserAddons usage
-const { createProvider } = require('../providers')
+// createProvider is passed via DI to syncUserAddons from callers inside the factory
 
 // Helper function to reload all addons for a group
 async function reloadGroupAddons(prisma, getAccountId, groupId, req, decrypt) {
@@ -4414,7 +4277,7 @@ async function reloadGroupAddons(prisma, getAccountId, groupId, req, decrypt) {
   }
 }
 
-async function syncUserAddons(prismaClient, userId, excludedManifestUrls = [], unsafeMode = false, req, decrypt, getAccountIdParam, useCustomFields = true) {
+async function syncUserAddons(prismaClient, userId, excludedManifestUrls = [], unsafeMode = false, req, decrypt, getAccountIdParam, useCustomFields = true, createProviderFn = null) {
   try {
     // Ensure req has appAccountId for account scoping
     if (!req.appAccountId) {
@@ -4448,7 +4311,7 @@ async function syncUserAddons(prismaClient, userId, excludedManifestUrls = [], u
     if (!user) return { success: false, error: 'User not found' }
     if (!user.isActive) return { success: false, error: 'User is disabled' }
 
-    const provider = createProvider(user, { decrypt, req })
+    const provider = createProviderFn ? createProviderFn(user, { decrypt, req }) : null
     if (!provider) return { success: false, error: 'User is not connected to a provider' }
 
     // syncUserAddons only handles the actual syncing - no mode handling
@@ -4467,7 +4330,7 @@ async function syncUserAddons(prismaClient, userId, excludedManifestUrls = [], u
         parseProtectedAddons: parseProtectedAddonsFn,
         canonicalizeManifestUrl: canonicalizeFn,
         StremioAPIClient,
-        createProvider,
+        createProvider: createProviderFn,
         unsafeMode,
         useCustomFields
       })

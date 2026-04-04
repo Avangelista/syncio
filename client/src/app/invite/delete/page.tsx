@@ -36,9 +36,9 @@ export default function DeleteUserRequestPage() {
     }
   })
 
-  // Delete user (Stremio via authKey, or Nuvio via nuvioUserId)
+  // Delete user (Stremio via authKey, or Nuvio via providerUserId)
   const deleteUserMutation = useMutation({
-    mutationFn: (params: { authKey?: string; nuvioData?: { nuvioUserId: string; refreshToken: string } }) =>
+    mutationFn: (params: { authKey?: string; nuvioData?: { providerUserId: string; refreshToken: string } }) =>
       invitationsAPI.deleteUser(params.authKey, params.nuvioData),
     onSuccess: () => {
       setIsSuccess(true)
@@ -64,7 +64,7 @@ export default function DeleteUserRequestPage() {
     } catch {}
   }
 
-  const handleNuvioAuth = async (data: { nuvioUserId: string; refreshToken: string }) => {
+  const handleNuvioAuth = async (data: { providerUserId: string; refreshToken: string }) => {
     try {
       await deleteUserMutation.mutateAsync({ nuvioData: data })
     } catch {}

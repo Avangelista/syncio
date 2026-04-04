@@ -16,7 +16,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { StremioAPIStore, StremioAPIClient } = require('stremio-api-client');
-const { createProvider } = require('./providers');
+const { makeCreateProvider } = require('./providers');
 const debug = require('./utils/debug');
 require('dotenv').config();
 
@@ -104,6 +104,9 @@ const app = express();
 const prisma = new PrismaClient();
 console.log('Prisma client initialized:', !!prisma);
 
+// Create provider factory with token persistence support
+const createProvider = makeCreateProvider({ prisma, encrypt })
+
 // Use helper-provided getAccountId (account scoping rules centralized)
 const getAccountId = getAccountIdHelper
 
@@ -125,7 +128,7 @@ app.use(cors({
   credentials: true,
 }));
 
-// Rate limiting (disabled by default)
+// Rate limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'),
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '1000'),
@@ -133,6 +136,25 @@ const limiter = rateLimit({
   legacyHeaders: false,
   message: 'Too many requests from this IP, please try again later.',
 });
+app.use('/api', limiter);
+app.use('/invite', limiter);
+
+// Stricter rate limiting for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: 'Too many authentication attempts, please try again later.',
+});
+app.use('/api/nuvio/validate', authLimiter);
+app.use('/api/nuvio/connect', authLimiter);
+app.use('/api/nuvio/start-oauth', authLimiter);
+app.use('/api/nuvio/exchange-oauth', authLimiter);
+app.use('/api/nuvio/connect-authkey', authLimiter);
+// poll-oauth is a high-frequency status check (~3s interval), not an auth attempt —
+// it uses the general API limiter (1000/15min) instead of the auth limiter.
+app.use('/api/public-library/authenticate', authLimiter);
+app.use('/invite/:code/complete', authLimiter);
+app.use('/invite/delete-user', authLimiter);
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -199,12 +221,12 @@ app.use('/api/invitations', invitationsRouter({ prisma, getAccountId, AUTH_ENABL
 app.use('/invite', invitationsRouter.createPublicRouter({ prisma, encrypt, assignUserToGroup, decrypt }));
 // Public library router (no auth required)
 const { getCachedLibrary, setCachedLibrary } = require('./utils/libraryCache');
-app.use('/api/public-library', publicLibraryRouter({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibrary, setCachedLibrary }));
+app.use('/api/public-library', publicLibraryRouter({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibrary, setCachedLibrary, createProvider }));
 
 // Error handling
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
-  res.status(500).json({ message: 'Internal server error', error: error.message });
+  res.status(500).json({ message: 'Internal server error' });
 });
 
 // Shutdown
@@ -243,14 +265,14 @@ scheduleSyncs(
 
   // Schedule user expiration cleanup (runs at midnight)
   try {
-    scheduleUserExpiration(prisma, decrypt, StremioAPIClient)
+    scheduleUserExpiration(prisma, decrypt, StremioAPIClient, createProvider)
   } catch (err) {
     console.error('⚠️ Failed to initialize user expiration scheduler:', err)
   }
 
   // Schedule activity monitor (checks for new watch activity every 5 minutes)
   try {
-    scheduleActivityMonitor(prisma, decrypt, getAccountId, AUTH_ENABLED)
+    scheduleActivityMonitor(prisma, decrypt, getAccountId, AUTH_ENABLED, createProvider)
   } catch (err) {
     console.error('⚠️ Failed to initialize activity monitor:', err)
   }

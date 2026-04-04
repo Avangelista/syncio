@@ -1,5 +1,5 @@
 // User expiration cleanup system
-const { createProvider } = require('../providers')
+let { createProvider } = require('../providers')
 const DAY_MS = 24 * 60 * 60 * 1000
 const MINUTE_MS = 60 * 1000
 
@@ -165,7 +165,8 @@ async function deleteExpiredUsers(prisma, decrypt, StremioAPIClient) {
 /**
  * Schedule user expiration cleanup to run at midnight (or every minute in debug mode)
  */
-function scheduleUserExpiration(prisma, decrypt, StremioAPIClient) {
+function scheduleUserExpiration(prisma, decrypt, StremioAPIClient, configuredCreateProvider) {
+  if (configuredCreateProvider) createProvider = configuredCreateProvider
   if (expirationTimer) {
     clearTimeout(expirationTimer)
     expirationTimer = null

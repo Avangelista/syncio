@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTheme } from '@/contexts/ThemeContext'
 import { publicAuthAPI, publicLibraryAPI } from '@/services/api'
-import StremioOAuthCard from './StremioOAuthCard'
+import { StremioOAuthCard } from './StremioOAuthCard'
 import { NuvioOAuthCard } from './NuvioOAuthCard'
 import { Eye, EyeOff, LogIn, User, Lock, Settings, Users } from 'lucide-react'
 import Image from 'next/image'
@@ -101,20 +101,16 @@ export default function LoginPage({
       } else {
         // User mode: use publicLibraryAPI
         try {
-          console.log('[LoginPage] Attempting to authenticate user with authKey:', authKey ? 'present' : 'missing')
           const result = await publicLibraryAPI.authenticate(authKey)
-          console.log('[LoginPage] Authenticate result:', JSON.stringify(result, null, 2))
           
           // Check if result indicates failure FIRST (before checking success)
           if (!result) {
-            console.error('[LoginPage] Authentication failed - no result')
             toast.error('Authentication failed: No response from server')
             throw new Error('AUTHENTICATION_FAILED')
           }
           
           // Check for error in result (even if status is 200) - THIS MUST BE CHECKED FIRST
           if (result.error) {
-            console.error('[LoginPage] Authentication failed - error in result:', result)
             const errorCode = result.error
             const errorMessage = result.message
             
@@ -135,19 +131,15 @@ export default function LoginPage({
           
           // Only proceed if we have success AND user data - DOUBLE CHECK
           if (!result.success) {
-            console.error('[LoginPage] Authentication failed - result.success is false:', result)
             toast.error('Authentication failed: Invalid response from server')
             throw new Error('AUTHENTICATION_FAILED')
           }
           
           if (!result.user) {
-            console.error('[LoginPage] Authentication failed - no user in result:', result)
             toast.error('Authentication failed: No user data received')
             throw new Error('AUTHENTICATION_FAILED')
           }
           
-          // FINAL CHECK - only show success if we have both success and user
-          console.log('[LoginPage] Authentication successful, user:', result.user.id)
           // Store in localStorage FIRST
           if (typeof window !== 'undefined') {
             const userData = {
@@ -157,7 +149,6 @@ export default function LoginPage({
               userInfo: result.user
             }
             localStorage.setItem('public-library-user', JSON.stringify(userData))
-            console.log('[LoginPage] Stored in localStorage:', userData)
           }
           
           // Small delay to ensure localStorage is written
@@ -168,7 +159,6 @@ export default function LoginPage({
           
           // Then handle redirect - callback should handle it
           if (onUserLogin) {
-            console.log('[LoginPage] Calling onUserLogin callback')
             onUserLogin(result.user.id, authKey, result.user)
             // Callback handles redirect - it will use window.location.href
           } else {
@@ -176,14 +166,6 @@ export default function LoginPage({
             window.location.href = '/user/home'
           }
         } catch (authErr: any) {
-          // Handle authentication errors (403, 401, etc.)
-          console.error('[LoginPage] Authentication error caught:', {
-            message: authErr?.message,
-            response: authErr?.response,
-            status: authErr?.response?.status,
-            data: authErr?.response?.data
-          })
-          
           // If error was already handled (toast shown), don't show it again
           const errorData = authErr?.response?.data
           const errorCode = errorData?.error || authErr?.message
@@ -207,7 +189,6 @@ export default function LoginPage({
         }
       }
     } catch (err: any) {
-      console.error('Stremio login error (outer catch):', err)
       // Check if this is a user authentication error that was already handled
       const errorData = err?.response?.data
       const errorCode = errorData?.error
@@ -222,9 +203,9 @@ export default function LoginPage({
     }
   }, [mode, onAdminLogin, onUserLogin, router])
 
-  const handleNuvioAuth = useCallback(async (data: { email: string; nuvioUserId: string; nuvioPassword?: string; refreshToken?: string }) => {
+  const handleNuvioAuth = useCallback(async (data: { email: string; providerUserId: string; password?: string; refreshToken?: string }) => {
     try {
-      const result = await publicLibraryAPI.authenticateNuvio(data.email, data.nuvioPassword, data.nuvioUserId, data.refreshToken)
+      const result = await publicLibraryAPI.authenticateNuvio(data.email, data.password, data.providerUserId, data.refreshToken)
 
       if (result.error) {
         const errorCode = result.error
@@ -247,11 +228,12 @@ export default function LoginPage({
       }
 
       if (typeof window !== 'undefined') {
+        const nuvioAuthKey = result.authKey || `nuvio:${data.providerUserId}`
         const userData = {
           userId: result.user.id,
-          authKey: `nuvio:${data.nuvioUserId}`,
+          authKey: nuvioAuthKey,
           providerType: 'nuvio',
-          nuvioRefreshToken: data.refreshToken,
+          refreshToken: data.refreshToken,
           userInfo: result.user
         }
         localStorage.setItem('public-library-user', JSON.stringify(userData))
@@ -261,7 +243,8 @@ export default function LoginPage({
       toast.success('Welcome! You\'re now connected.')
 
       if (onUserLogin) {
-        onUserLogin(result.user.id, `nuvio:${data.nuvioUserId}`, result.user)
+        const nuvioAuthKey = result.authKey || `nuvio:${data.providerUserId}`
+        onUserLogin(result.user.id, nuvioAuthKey, result.user)
       } else {
         window.location.href = '/user/home'
       }
@@ -682,8 +665,7 @@ export default function LoginPage({
                             setError(response.message || 'Failed to generate UUID')
                           }
                         })
-                        .catch(err => {
-                          console.error('UUID generation error:', err)
+                        .catch(() => {
                           setError('Failed to generate UUID')
                         })
                     }

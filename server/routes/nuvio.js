@@ -1,5 +1,27 @@
 const express = require('express');
-const { validateNuvioCredentials, startNuvioTvLogin, pollNuvioTvLogin, exchangeNuvioTvLogin } = require('../providers/nuvioAuth');
+const { validateNuvioCredentials, refreshNuvioToken, parseJwtPayload, startNuvioTvLogin, pollNuvioTvLogin, exchangeNuvioTvLogin } = require('../providers/nuvioAuth');
+
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * Verify that a refresh token's JWT sub claim matches the claimed nuvioUserId.
+ * Returns the refresh result (with new tokens) on success, throws on mismatch.
+ */
+async function verifyNuvioIdentity(claimedUserId, refreshTokenValue) {
+  if (!refreshTokenValue) {
+    const err = new Error('Refresh token is required for OAuth authentication');
+    err.status = 400;
+    throw err;
+  }
+  const result = await refreshNuvioToken(refreshTokenValue);
+  const payload = parseJwtPayload(result.access_token);
+  if (!payload || payload.sub !== claimedUserId) {
+    const err = new Error('Token does not match the claimed user identity');
+    err.status = 403;
+    throw err;
+  }
+  return result;
+}
 
 module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
   const router = express.Router();
@@ -35,7 +57,8 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
   // Connect a user to Nuvio (store encrypted refresh token)
   router.post('/connect', async (req, res) => {
     try {
-      const { userId, email, password, nuvioUserId: oauthNuvioUserId, refreshToken: oauthRefreshToken } = req.body;
+      const { userId, email, password, refreshToken: oauthRefreshToken } = req.body;
+      const oauthNuvioUserId = req.body.providerUserId;
 
       if (!userId) {
         return res.status(400).json({ error: 'userId is required' });
@@ -44,10 +67,14 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       let nuvioUserId, nuvioEmail, refreshToken;
 
       if (oauthNuvioUserId && oauthRefreshToken) {
-        // OAuth reconnection — tokens already exchanged
+        // OAuth reconnection — verify token matches claimed identity
+        if (!UUID_V4_RE.test(oauthNuvioUserId)) {
+          return res.status(400).json({ error: 'Invalid user ID format' });
+        }
+        const verified = await verifyNuvioIdentity(oauthNuvioUserId, oauthRefreshToken);
         nuvioUserId = oauthNuvioUserId;
         nuvioEmail = email;
-        refreshToken = oauthRefreshToken;
+        refreshToken = verified.refresh_token || oauthRefreshToken;
       } else if (email && password) {
         // Credentials reconnection
         const result = await validateNuvioCredentials(email, password);
@@ -66,7 +93,8 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
           providerType: 'nuvio',
           nuvioRefreshToken: encryptedRefreshToken,
           nuvioUserId,
-          email: nuvioEmail || email
+          email: nuvioEmail || email,
+          stremioAuthKey: null
         }
       });
 
@@ -79,24 +107,30 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       });
     } catch (error) {
       console.error('Nuvio connect error:', error);
-      res.status(500).json({ error: error.message || 'Failed to connect to Nuvio' });
+      const status = error.status || 500;
+      res.status(status).json({ error: status === 500 ? 'Failed to connect to Nuvio' : error.message });
     }
   });
 
   // Connect via credentials or OAuth (validate + optionally create user)
   router.post('/connect-authkey', async (req, res) => {
     try {
-      const { email, password, username, groupName, colorIndex, create, nuvioUserId: oauthNuvioUserId, refreshToken: oauthRefreshToken } = req.body;
+      const { email, password, username, groupName, colorIndex, create, refreshToken: oauthRefreshToken } = req.body;
+      const oauthNuvioUserId = req.body.providerUserId;
 
       let nuvioUserId;
       let nuvioEmail;
       let refreshToken;
 
       if (oauthNuvioUserId && !password) {
-        // OAuth path — user already validated via exchange
+        // OAuth path — verify token matches claimed identity
+        if (!UUID_V4_RE.test(oauthNuvioUserId)) {
+          return res.status(400).json({ error: 'Invalid user ID format' });
+        }
+        const verified = await verifyNuvioIdentity(oauthNuvioUserId, oauthRefreshToken);
         nuvioUserId = oauthNuvioUserId;
         nuvioEmail = email;
-        refreshToken = oauthRefreshToken || null;
+        refreshToken = verified.refresh_token || oauthRefreshToken;
       } else {
         // Credentials path — validate with Nuvio
         if (!email || !password) {
@@ -113,7 +147,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
           success: true,
           user: { id: nuvioUserId, email: nuvioEmail },
           providerType: 'nuvio',
-          nuvioUserId
+          providerUserId: nuvioUserId
         });
       }
 
@@ -121,9 +155,9 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       const accountId = getAccountId(req);
       const normalizedEmail = nuvioEmail?.toLowerCase?.() || email.toLowerCase();
 
-      // Check if user already exists
+      // Check if user already exists (scoped to provider type)
       const existingUser = await prisma.user.findFirst({
-        where: { accountId, email: normalizedEmail }
+        where: { accountId, email: normalizedEmail, providerType: 'nuvio' }
       });
       if (existingUser) {
         return res.status(409).json({ message: 'User already exists' });
@@ -176,11 +210,12 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
         success: true,
         user: { id: newUser.id, username: finalUsername, email: normalizedEmail },
         providerType: 'nuvio',
-        nuvioUserId
+        providerUserId: nuvioUserId
       });
     } catch (error) {
       console.error('Nuvio connect-authkey error:', error);
-      res.status(500).json({ error: error.message || 'Failed to validate Nuvio credentials' });
+      const status = error.status || 500;
+      res.status(status).json({ error: status === 500 ? 'Failed to validate Nuvio credentials' : error.message });
     }
   });
 
@@ -193,7 +228,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       res.json(result)
     } catch (error) {
       console.error('Nuvio start-oauth error:', error)
-      res.status(500).json({ error: error.message || 'Failed to start Nuvio OAuth' })
+      res.status(500).json({ error: 'Failed to start Nuvio OAuth' })
     }
   })
 
@@ -208,7 +243,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       res.json(result)
     } catch (error) {
       console.error('Nuvio poll-oauth error:', error)
-      res.status(500).json({ error: error.message || 'Failed to poll Nuvio OAuth' })
+      res.status(500).json({ error: 'Failed to poll Nuvio OAuth' })
     }
   })
 
@@ -227,7 +262,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       })
     } catch (error) {
       console.error('Nuvio exchange-oauth error:', error)
-      res.status(500).json({ error: error.message || 'Failed to exchange Nuvio OAuth' })
+      res.status(500).json({ error: 'Failed to exchange Nuvio OAuth' })
     }
   })
 

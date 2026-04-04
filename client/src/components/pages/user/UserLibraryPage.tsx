@@ -64,9 +64,9 @@ export default function UserLibraryPage() {
       // Otherwise, fetch all public users' libraries and combine them
       const allLibraries: any[] = []
       
-      // Always include current user's library (no requestingUserId needed for own library)
+      // Always include current user's library (pass userId as requestingUserId for self-access)
       try {
-        const currentUserData = await publicLibraryAPI.getLibrary(userId)
+        const currentUserData = await publicLibraryAPI.getLibrary(userId, userId)
         const currentLibrary = currentUserData?.library || (Array.isArray(currentUserData) ? currentUserData : [])
         allLibraries.push(...currentLibrary.map((item: any) => ({
           ...item,

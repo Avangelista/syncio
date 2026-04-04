@@ -91,19 +91,19 @@ function createStremioProvider({ authKey }) {
       })
     },
 
-    async getLikeStatus(authToken, mediaId, mediaType) {
+    async getLikeStatus(mediaId, mediaType) {
       const res = await fetch(
-        `https://likes.stremio.com/api/get_status?authToken=${encodeURIComponent(authToken)}&mediaId=${encodeURIComponent(mediaId)}&mediaType=${encodeURIComponent(mediaType)}`
+        `https://likes.stremio.com/api/get_status?authToken=${encodeURIComponent(authKey)}&mediaId=${encodeURIComponent(mediaId)}&mediaType=${encodeURIComponent(mediaType)}`
       )
       if (!res.ok) return null
       return await res.json()
     },
 
-    async setLikeStatus(authToken, mediaId, mediaType, status) {
+    async setLikeStatus(mediaId, mediaType, status) {
       await fetch('https://likes.stremio.com/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ authToken, mediaId, mediaType, status })
+        body: JSON.stringify({ authToken: authKey, mediaId, mediaType, status })
       })
     },
 

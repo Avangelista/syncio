@@ -7,7 +7,7 @@ import { nuvioAPI } from '@/services/api'
 interface NuvioOAuthCardProps {
   active?: boolean
   autoStart?: boolean
-  onAuth: (data: { email: string; nuvioUserId: string; refreshToken: string }) => Promise<void> | void
+  onAuth: (data: { email: string; providerUserId: string; refreshToken: string }) => Promise<void> | void
   disabled?: boolean
   className?: string
   withContainer?: boolean
@@ -32,7 +32,6 @@ export function NuvioOAuthCard({
   const [isCreating, setIsCreating] = useState(false)
   const [isPolling, setIsPolling] = useState(false)
   const [isCompleting, setIsCompleting] = useState(false)
-  const [code, setCode] = useState('')
   const [webUrl, setWebUrl] = useState<string | null>(null)
   const [expiresAt, setExpiresAt] = useState<number | null>(null)
   const [error, setError] = useState('')
@@ -41,17 +40,19 @@ export function NuvioOAuthCard({
   const sessionRef = useRef<{ code: string; deviceNonce: string; anonToken: string } | null>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const hasCompletedRef = useRef(false)
+  const retryCountRef = useRef(0)
+  const MAX_RETRIES = 3
 
   const resetFlow = useCallback(() => {
     setIsCreating(false)
     setIsPolling(false)
     setIsCompleting(false)
-    setCode('')
     setWebUrl(null)
     setExpiresAt(null)
     setError('')
     sessionRef.current = null
     hasCompletedRef.current = false
+    retryCountRef.current = 0
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current)
       pollIntervalRef.current = null
@@ -66,7 +67,6 @@ export function NuvioOAuthCard({
 
     try {
       const result = await nuvioAPI.startOAuth()
-      setCode(result.code)
       setWebUrl(result.webUrl)
       setExpiresAt(new Date(result.expiresAt).getTime())
       sessionRef.current = {
@@ -101,25 +101,33 @@ export function NuvioOAuthCard({
         const result = await nuvioAPI.pollOAuth(sessionRef.current)
         if (result.status === 'approved' && !hasCompletedRef.current) {
           hasCompletedRef.current = true
+          if (pollIntervalRef.current) {
+            clearInterval(pollIntervalRef.current)
+            pollIntervalRef.current = null
+          }
           setIsPolling(false)
           setIsCompleting(true)
 
-          // Exchange for tokens
-          const exchange = await nuvioAPI.exchangeOAuth(sessionRef.current)
-          if (exchange.success && exchange.user) {
-            await onAuth({
-              email: exchange.user.email,
-              nuvioUserId: exchange.user.id,
-              refreshToken: exchange.refreshToken,
-            })
-          } else {
-            setError('Failed to complete Nuvio authentication')
+          try {
+            // Exchange for tokens
+            const exchange = await nuvioAPI.exchangeOAuth(sessionRef.current!)
+            if (exchange.success && exchange.user) {
+              await onAuth({
+                email: exchange.user.email,
+                providerUserId: exchange.user.id,
+                refreshToken: exchange.refreshToken,
+              })
+            } else {
+              setError('Failed to complete Nuvio authentication')
+            }
+          } catch (err: any) {
+            setError(err?.message || 'Failed to complete Nuvio authentication')
+          } finally {
+            setIsCompleting(false)
           }
-          setIsCompleting(false)
         }
       } catch (err: any) {
         // Polling errors are usually transient, don't stop
-        console.error('Nuvio poll error:', err)
       }
     }
 
@@ -139,8 +147,14 @@ export function NuvioOAuthCard({
     if (!expiresAt || !isPolling) return
     const check = setInterval(() => {
       if (Date.now() > expiresAt) {
-        resetFlow()
-        startFlow()
+        if (retryCountRef.current < MAX_RETRIES) {
+          retryCountRef.current += 1
+          resetFlow()
+          startFlow()
+        } else {
+          resetFlow()
+          setError('Session expired. Please try again.')
+        }
       }
     }, 3000)
     return () => clearInterval(check)

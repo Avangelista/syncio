@@ -9,7 +9,6 @@ import { invitationsAPI, usersAPI } from '@/services/api'
 import { InvitePageLayout } from './components/InvitePageLayout'
 import { RequestAccessForm } from './components/RequestAccessForm'
 import { RequestAcceptedPage } from './components/RequestAcceptedPage'
-import { RequestRenewedPage } from './components/RequestRenewedPage'
 import { StatusPage } from './components/StatusPage'
 
 export default function InviteRequestPage() {
@@ -75,10 +74,6 @@ export default function InviteRequestPage() {
 
   React.useEffect(() => {
     setIsMounted(true)
-    // Mark that we've restored state if email/username exist from localStorage
-    if (initialState.email && initialState.username) {
-      setHasRestoredState(true)
-    }
     // Don't sync requestSubmitted from localStorage here - only restore on initial mount via getInitialState()
     // This prevents auto-submission when user types matching email/username
   }, [storageKey, initialState.email, initialState.username])
@@ -113,9 +108,6 @@ export default function InviteRequestPage() {
       })
   }, [isMounted, inviteCode])
 
-  const [providerType, setProviderType] = React.useState<'stremio' | 'nuvio'>('stremio')
-  const [nuvioEmail, setNuvioEmail] = React.useState('')
-  const [nuvioPassword, setNuvioPassword] = React.useState('')
   const [authKey, setAuthKey] = React.useState<string | null>(null)
   const [oauthLinkGenerated, setOauthLinkGenerated] = React.useState(false)
   const [isGeneratingOAuth, setIsGeneratingOAuth] = React.useState(false)
@@ -128,11 +120,7 @@ export default function InviteRequestPage() {
   const [isCreatingUser, setIsCreatingUser] = React.useState(false)
   const hasAttemptedCreationRef = React.useRef<Set<string>>(new Set())
   const verificationFailureCountRef = React.useRef<Map<string, number>>(new Map())
-  // Track if we've restored state from localStorage (for refresh restoration)
-  const [hasRestoredState, setHasRestoredState] = React.useState(false)
-  
   // Check status only when request has been submitted
-  // hasRestoredState is only used to set requestSubmitted on initial load, not for enabling the query
   const shouldCheckStatus = requestSubmitted
   
   const { data: status, dataUpdatedAt, refetch: refetchStatus, error: statusError, isLoading: isLoadingStatus } = useQuery({
@@ -255,7 +243,6 @@ export default function InviteRequestPage() {
     if (isInitialLoad && currentStatus && (currentStatus === 'pending' || currentStatus === 'accepted' || currentStatus === 'rejected' || currentStatus === 'completed')) {
       if (!requestSubmitted) {
         setRequestSubmitted(true)
-        setHasRestoredState(true) // Mark that we've restored state
       }
     }
     
@@ -384,30 +371,8 @@ export default function InviteRequestPage() {
       const finalEmail = email || statusData?.email || ''
       const finalUsername = username || statusData?.username || ''
 
-      console.log('[InvitePage] completeMutation.mutationFn called with:', {
-        inviteCode,
-        email: finalEmail,
-        username: finalUsername,
-        emailFromForm: email,
-        emailFromStatus: statusData?.email,
-        usernameFromForm: username,
-        usernameFromStatus: statusData?.username,
-        authKeyLength: authKey?.length,
-        groupName,
-        providerType
-      })
-
       if (!finalEmail || !finalUsername) {
         throw new Error('Email and username are required')
-      }
-
-      // Nuvio path: use email/password instead of authKey
-      if (providerType === 'nuvio') {
-        return invitationsAPI.complete(inviteCode, finalEmail, finalUsername, '', groupName, {
-          providerType: 'nuvio',
-          nuvioEmail,
-          nuvioPassword
-        })
       }
 
       if (!authKey) {
@@ -515,33 +480,20 @@ export default function InviteRequestPage() {
   }
 
   const handleOAuthAuthKey = async (authKey: string) => {
-    console.log('[InvitePage] handleOAuthAuthKey called with authKey:', authKey ? 'present' : 'missing')
     const statusData = status as any
     // Use email/username from status if form state is missing (e.g., on "Request Renewed" page)
     const finalEmail = email || statusData?.email || ''
     const finalUsername = username || statusData?.username || ''
-    console.log('[InvitePage] Current state - email:', finalEmail, 'username:', finalUsername, 'inviteCode:', inviteCode)
-    console.log('[InvitePage] Email sources - form:', email, 'status:', statusData?.email)
-    console.log('[InvitePage] Username sources - form:', username, 'status:', statusData?.username)
-    
+
     // Validate required fields
     if (!finalEmail || !finalUsername) {
       const error = new Error('Email and username are required to complete OAuth')
-      console.error('[InvitePage] Missing email or username:', { 
-        email: finalEmail, 
-        username: finalUsername,
-        emailFromForm: email,
-        emailFromStatus: statusData?.email,
-        usernameFromForm: username,
-        usernameFromStatus: statusData?.username
-      })
       toast.error('Email and username are required. Please submit a request first.')
       throw error
     }
-    
+
     if (!authKey) {
       const error = new Error('Auth key is required')
-      console.error('[InvitePage] Missing authKey')
       toast.error('Authentication key is missing. Please try again.')
       throw error
     }
@@ -559,25 +511,10 @@ export default function InviteRequestPage() {
     
     // Call the mutation to create the user and wait for it to complete
     // Using mutateAsync to get a promise that resolves when the mutation completes
-    console.log('[InvitePage] Calling completeMutation.mutateAsync with:', {
-      inviteCode,
-      email,
-      username,
-      authKeyLength: authKey?.length,
-      hasGroupName: !!(status as any)?.groupName
-    })
     try {
-      const result = await completeMutation.mutateAsync(authKey)
-      console.log('[InvitePage] completeMutation completed successfully, result:', result)
+      await completeMutation.mutateAsync(authKey)
       // The mutation's onSuccess handler will handle refetching status and showing success
     } catch (error: any) {
-      console.error('[InvitePage] completeMutation failed:', error)
-      console.error('[InvitePage] Error details:', {
-        message: error?.message,
-        response: error?.response,
-        status: error?.response?.status,
-        data: error?.response?.data
-      })
       setIsCreatingUser(false)
       // The mutation's onError handler will handle error display, but we also show a toast here
       const errorMessage = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Failed to complete account creation'
@@ -586,7 +523,7 @@ export default function InviteRequestPage() {
     }
   }
 
-  const handleNuvioComplete = async (data: { providerType: 'nuvio'; nuvioEmail: string; nuvioUserId: string; nuvioPassword?: string; refreshToken?: string }) => {
+  const handleNuvioComplete = async (data: { providerType: 'nuvio'; email: string; providerUserId: string; password?: string; refreshToken?: string }) => {
     const statusData = status as any
     const finalEmail = email || statusData?.email || ''
     const finalUsername = username || statusData?.username || ''
@@ -601,16 +538,37 @@ export default function InviteRequestPage() {
     try {
       await invitationsAPI.complete(inviteCode, finalEmail, finalUsername, '', groupName, {
         providerType: 'nuvio',
-        nuvioEmail: data.nuvioEmail,
-        nuvioPassword: data.nuvioPassword,
-        nuvioUserId: data.nuvioUserId,
-        nuvioRefreshToken: data.refreshToken,
+        providerEmail: data.email,
+        password: data.password,
+        providerUserId: data.providerUserId,
+        refreshToken: data.refreshToken,
       })
       await queryClient.invalidateQueries({
         queryKey: ['invite-status', inviteCode, email, username]
       })
-      await refetchStatus()
-      toast.success('Account created successfully! You can now log in.')
+      const result = await refetchStatus()
+
+      if (result.data?.status === 'completed') {
+        toast.success('Account created successfully! You can now log in.')
+      } else {
+        // Poll for completion like the Stremio path does
+        let pollCount = 0
+        const pollInterval = setInterval(async () => {
+          pollCount++
+          await queryClient.invalidateQueries({
+            queryKey: ['invite-status', inviteCode, email, username]
+          })
+          const pollResult = await refetchStatus()
+          if (pollResult.data?.status === 'completed') {
+            clearInterval(pollInterval)
+            toast.success('Account created successfully! You can now log in.')
+          }
+          if (pollCount >= 10) {
+            clearInterval(pollInterval)
+            await refetchStatus()
+          }
+        }, 500)
+      }
     } catch (error: any) {
       const errorMessage = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Failed to complete account creation'
       toast.error(errorMessage)
@@ -651,7 +609,6 @@ export default function InviteRequestPage() {
       // Use full origin for localhost to ensure Stremio recognizes it
       const host = window.location?.host || window.location?.hostname || 'syncio.app'
       const origin = window.location?.origin || `http://${host}`
-      console.log('[InvitePage] Polling Stremio OAuth with host:', host, 'origin:', origin, 'code:', status.oauthCode?.substring(0, 4) + '...')
       const response = await fetch(
         `https://link.stremio.com/api/v2/read?type=Read&code=${encodeURIComponent(status.oauthCode)}`,
         {
@@ -955,7 +912,6 @@ export default function InviteRequestPage() {
     }
     setEmailMismatchError(false)
     setRequestSubmitted(false)
-    setHasRestoredState(false) // Reset restored state flag
     setEmail('')
     setUsername('')
     setOauthLinkGenerated(false)
@@ -1141,23 +1097,6 @@ export default function InviteRequestPage() {
               This page will refresh automatically once generated.
             </p>
           </StatusPage>
-        )
-      }
-      
-      if (isRenewed) {
-        return (
-          <RequestRenewedPage
-            oauthLink={statusData?.oauthLink || null}
-            oauthCode={statusData?.oauthCode || null}
-            oauthExpiresAt={statusData?.oauthExpiresAt || null}
-            oauthLinkGenerated={oauthLinkGenerated}
-            oauthKeyVersion={oauthKeyVersion}
-            isGeneratingOAuth={isGeneratingOAuth}
-            isCompleting={completeMutation.isPending || isCreatingUser}
-            onGenerateOAuth={handleGenerateOAuth}
-            onAuthKey={handleOAuthAuthKey}
-            onNuvioComplete={handleNuvioComplete}
-          />
         )
       }
       

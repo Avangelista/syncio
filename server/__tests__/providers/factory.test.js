@@ -5,7 +5,7 @@
  * They define the contract that the factory must satisfy.
  */
 
-const { createProvider } = require('../../providers')
+const { createProvider, makeCreateProvider } = require('../../providers')
 
 const mockDecrypt = (val) => 'decrypted_' + val
 const mockReq = { appAccountId: 'test-account' }
@@ -84,6 +84,27 @@ describe('createProvider factory', () => {
       for (const method of REQUIRED_METHODS) {
         expect(typeof provider[method]).toBe('function')
       }
+    })
+  })
+
+  describe('makeCreateProvider', () => {
+    test('creates a factory function', () => {
+      const factory = makeCreateProvider({})
+      expect(typeof factory).toBe('function')
+    })
+
+    test('configured factory works the same as default', () => {
+      const factory = makeCreateProvider({})
+      const user = { providerType: 'stremio', stremioAuthKey: 'enc_key' }
+      const provider = factory(user, { decrypt: mockDecrypt, req: mockReq })
+      expect(provider).not.toBeNull()
+      expect(provider.type).toBe('stremio')
+    })
+
+    test('unconfigured default export still works', () => {
+      const user = { providerType: 'stremio', stremioAuthKey: 'enc_key' }
+      const provider = createProvider(user, { decrypt: mockDecrypt, req: mockReq })
+      expect(provider).not.toBeNull()
     })
   })
 })

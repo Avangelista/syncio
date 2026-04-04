@@ -525,16 +525,15 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
             // 5 min expiry - convert to ISO string for JSON serialization
             oauthExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
           } else {
-            return res.status(500).json({ 
-              error: 'Failed to generate OAuth link - Stremio API returned invalid response',
-              details: stremioData?.error?.message || 'Missing code or link in response'
+            return res.status(500).json({
+              error: 'Failed to generate OAuth link - Stremio API returned invalid response'
             })
           }
         } else {
           const errorText = await stremioResponse.text()
-          return res.status(500).json({ 
-            error: 'Failed to generate OAuth link from Stremio',
-            details: `HTTP ${stremioResponse.status}: ${errorText}`
+          console.error('Stremio OAuth link generation failed:', stremioResponse.status, errorText)
+          return res.status(500).json({
+            error: 'Failed to generate OAuth link from Stremio'
           })
         }
       } catch (error) {
@@ -562,13 +561,26 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
   // Using /delete-user to avoid conflict with /invite/delete page route
   publicRouter.post('/delete-user', async (req, res) => {
     try {
-      const { authKey, nuvioUserId, nuvioRefreshToken } = req.body
+      const { authKey, providerUserId: nuvioUserId, refreshToken: nuvioRefreshToken } = req.body;
 
       let userEmail = null
       let addonsCleared = false
 
       if (nuvioUserId) {
         // --- Nuvio path ---
+        // Verify the caller owns this Nuvio account
+        if (!nuvioRefreshToken) {
+          res.setHeader('Content-Type', 'application/json')
+          return res.status(400).json({ error: 'Refresh token is required for Nuvio account deletion' })
+        }
+        const { refreshNuvioToken, parseJwtPayload } = require('../providers/nuvioAuth')
+        const refreshResult = await refreshNuvioToken(nuvioRefreshToken)
+        const jwtPayload = parseJwtPayload(refreshResult.access_token)
+        if (!jwtPayload || jwtPayload.sub !== nuvioUserId) {
+          res.setHeader('Content-Type', 'application/json')
+          return res.status(403).json({ error: 'Token does not match the claimed user identity' })
+        }
+
         // Find user by nuvioUserId to get their email
         const nuvioUser = await prisma.user.findFirst({
           where: { nuvioUserId },
@@ -901,16 +913,15 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
             // 5 min expiry
             oauthExpiresAt = new Date(Date.now() + 5 * 60 * 1000)
           } else {
-            return res.status(500).json({ 
-              error: 'Failed to generate OAuth link - Stremio API returned invalid response',
-              details: stremioData?.error?.message || 'Missing code or link in response'
+            return res.status(500).json({
+              error: 'Failed to generate OAuth link - Stremio API returned invalid response'
             })
           }
         } else {
           const errorText = await stremioResponse.text()
-          return res.status(500).json({ 
-            error: 'Failed to generate OAuth link from Stremio',
-            details: `HTTP ${stremioResponse.status}: ${errorText}`
+          console.error('Stremio OAuth link generation failed:', stremioResponse.status, errorText)
+          return res.status(500).json({
+            error: 'Failed to generate OAuth link from Stremio'
           })
         }
       } catch (error) {
@@ -943,7 +954,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
   publicRouter.post('/:inviteCode/complete', async (req, res) => {
     try {
       const { inviteCode } = req.params
-      const { email, username, authKey, groupName, providerType: reqProviderType, nuvioEmail, nuvioPassword, nuvioUserId: reqNuvioUserId, nuvioRefreshToken: reqNuvioRefreshToken } = req.body
+      const { email, username, authKey, groupName, providerType: reqProviderType, providerEmail: nuvioEmail, password: nuvioPassword, providerUserId: reqNuvioUserId, refreshToken: reqNuvioRefreshToken } = req.body;
       const providerType = reqProviderType || 'stremio'
 
       if (providerType === 'nuvio') {
@@ -1038,13 +1049,20 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
       let providerEmail = null
       let nuvioValidation = null
       if (providerType === 'nuvio') {
+        if (reqNuvioUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(reqNuvioUserId)) {
+          return res.status(400).json({ error: 'Invalid Nuvio user ID format' })
+        }
         if (reqNuvioUserId && reqNuvioRefreshToken) {
-          // OAuth path — tokens already exchanged, trust the data
-          const { parseJwtPayload } = require('../providers/nuvioAuth')
-          // Try to extract email from the nuvioUserId lookup or use the request email
+          // OAuth path — verify token matches claimed identity
+          const { refreshNuvioToken, parseJwtPayload } = require('../providers/nuvioAuth')
+          const refreshResult = await refreshNuvioToken(reqNuvioRefreshToken)
+          const jwtPayload = parseJwtPayload(refreshResult.access_token)
+          if (!jwtPayload || jwtPayload.sub !== reqNuvioUserId) {
+            return res.status(403).json({ error: 'Token does not match the claimed user identity' })
+          }
           nuvioValidation = {
             user: { id: reqNuvioUserId, email: nuvioEmail || email },
-            tokens: { refreshToken: reqNuvioRefreshToken }
+            tokens: { refreshToken: refreshResult.refresh_token || reqNuvioRefreshToken }
           }
           providerEmail = (nuvioEmail || email || '').toLowerCase().trim()
         } else {
@@ -1103,14 +1121,14 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
           if (webhookUrl) {
             const embed = {
               title: `User ${request.username} used different emails`,
-              description: `The user has used different emails for the Stremio account and its request.`,
+              description: `The user has used different emails for the ${providerType === 'nuvio' ? 'Nuvio' : 'Stremio'} account and its request.`,
               color: 0xef4444, // Red color for error
               fields: [
                 { name: 'Username', value: formatCodeBlock(request.username), inline: true },
                 { name: 'Invite Code', value: formatCodeBlock(invitation.inviteCode), inline: true },
                 { name: 'Group', value: formatCodeBlock(request.groupName || invitation.groupName || 'No group'), inline: true },
                 { name: 'Request Email', value: formatCodeBlock(request.email), inline: true },
-                { name: 'Stremio Email', value: formatCodeBlock(stremioEmail), inline: true }
+                { name: `${providerType === 'nuvio' ? 'Nuvio' : 'Stremio'} Email`, value: formatCodeBlock(stremioEmail), inline: true }
               ],
               timestamp: new Date().toISOString()
             }
@@ -1120,8 +1138,8 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
               embed.footer = { text: `Syncio v${appVersion}` }
             }
 
-            // For email mismatch, we have the user data, try to get their avatar
-            const avatarUrl = await getUserAvatarUrl(user.username, user.email, user.colorIndex || 0)
+            // For email mismatch, use the request data for the avatar
+            const avatarUrl = await getUserAvatarUrl(request.username, request.email, 0)
 
             await postDiscord(webhookUrl, null, {
               embeds: [embed],
@@ -1134,7 +1152,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
         
         return res.status(400).json({ 
           error: 'EMAIL_MISMATCH',
-          message: 'The Stremio account email does not match the email used in your request'
+          message: 'The provider account email does not match the email used in your request'
         })
       }
 

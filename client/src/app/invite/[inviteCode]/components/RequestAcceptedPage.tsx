@@ -15,7 +15,7 @@ interface RequestAcceptedPageProps {
   isCompleting: boolean
   onGenerateOAuth: () => void
   onAuthKey: (authKey: string) => void
-  onNuvioComplete?: (data: { providerType: 'nuvio'; nuvioEmail: string; nuvioUserId: string; nuvioPassword?: string; refreshToken?: string }) => void
+  onNuvioComplete?: (data: { providerType: 'nuvio'; email: string; providerUserId: string; password?: string; refreshToken?: string }) => void
 }
 
 export function RequestAcceptedPage({
@@ -31,7 +31,6 @@ export function RequestAcceptedPage({
   onNuvioComplete
 }: RequestAcceptedPageProps) {
   const [providerType, setProviderType] = React.useState<'stremio' | 'nuvio'>('stremio')
-  const isOAuthExpired = oauthExpiresAt && new Date(oauthExpiresAt) < new Date()
   const isOAuthValid = oauthExpiresAt && new Date(oauthExpiresAt) > new Date()
 
   return (
@@ -77,25 +76,23 @@ export function RequestAcceptedPage({
         </div>
 
         {providerType === 'nuvio' ? (
-          <div className="p-4 rounded-lg border" style={{ borderColor: '#3b82f6' }}>
-            <NuvioOAuthCard
-              onAuth={(data) => {
-                if (onNuvioComplete) {
-                  onNuvioComplete({
-                    providerType: 'nuvio',
-                    nuvioEmail: data.email,
-                    nuvioUserId: data.nuvioUserId,
-                    nuvioPassword: undefined,
-                    refreshToken: data.refreshToken,
-                  })
-                }
-              }}
-              disabled={isCompleting}
-              autoStart={true}
-              withContainer={false}
-              startButtonLabel="Sign in with Nuvio"
-            />
-          </div>
+          <NuvioOAuthCard
+            onAuth={(data) => {
+              if (onNuvioComplete) {
+                onNuvioComplete({
+                  providerType: 'nuvio',
+                  email: data.email,
+                  providerUserId: data.providerUserId,
+                  password: undefined,
+                  refreshToken: data.refreshToken,
+                })
+              }
+            }}
+            disabled={isCompleting}
+            autoStart={true}
+            withContainer={false}
+            startButtonLabel="Sign in with Nuvio"
+          />
         ) : (
           <>
             {!oauthLinkGenerated && !oauthLink && (

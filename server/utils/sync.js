@@ -12,12 +12,13 @@ async function getUserAddons(user, req, { decrypt, StremioAPIClient, createProvi
         return { success: false, addons: [], error: 'Unable to create provider for user' }
       }
       const result = await provider.getAddons()
-      return { success: true, addons: result, error: null }
+      const addons = Array.isArray(result) ? result : (result.addons || [])
+      return { success: true, addons, error: null }
     }
 
     // Legacy path: direct StremioAPIClient usage (backward compat during migration)
     if (!user.stremioAuthKey) {
-      return { success: false, addons: [], error: 'User not connected to Stremio' }
+      return { success: false, addons: [], error: 'User not connected to a provider' }
     }
     const authKeyPlain = decrypt(user.stremioAuthKey, req)
     const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain })
@@ -76,9 +77,9 @@ async function getUserAddons(user, req, { decrypt, StremioAPIClient, createProvi
       sanitized.addons = []
     }
 
-    return { success: true, addons: sanitized, error: null }
+    return { success: true, addons: sanitized.addons, error: null }
   } catch (error) {
-    return { success: false, addons: [], error: error.message || 'Failed to fetch Stremio addons' }
+    return { success: false, addons: [], error: error.message || 'Failed to fetch addons' }
   }
 }
 
@@ -313,7 +314,7 @@ function createGetUserSyncStatus({ prisma, getAccountId, decrypt, parseAddonIds,
         userAddonsError.includes('invalid') ||
         userAddonsError.includes('corrupted')
       )) {
-        return { isSynced: false, status: 'connect', message: 'Stremio connection invalid - please reconnect' }
+        return { isSynced: false, status: 'connect', message: 'Provider connection invalid - please reconnect' }
       }
       return { isSynced: false, status: 'error', message: userAddonsError }
     }

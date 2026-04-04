@@ -63,7 +63,7 @@ export default function UserSharesPage() {
     queryKey: ['user-shares-library', userId],
     queryFn: async () => {
       if (!userId) return null
-      const data = await publicLibraryAPI.getLibrary(userId)
+      const data = await publicLibraryAPI.getLibrary(userId, userId)
       return data?.library || (Array.isArray(data) ? data : [])
     },
     enabled: !!userId,

@@ -6,13 +6,27 @@
 const { supabaseGet, supabasePost, supabaseDelete, supabaseRpc } = require('./supabase')
 const { refreshNuvioToken, isTokenExpired } = require('./nuvioAuth')
 
-function createNuvioProvider({ refreshToken, userId }) {
+function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onTokenRefresh }) {
   let accessToken = null
+  let refreshToken = initialRefreshToken
 
   async function ensureAuth() {
     if (accessToken && !isTokenExpired(accessToken)) return
-    const result = await refreshNuvioToken(refreshToken)
-    accessToken = result.access_token
+    try {
+      const result = await refreshNuvioToken(refreshToken)
+      accessToken = result.access_token
+      // Persist rotated refresh token
+      if (result.refresh_token) {
+        refreshToken = result.refresh_token
+        if (onTokenRefresh) await onTokenRefresh(result.refresh_token)
+      }
+    } catch (e) {
+      console.warn(`[NuvioProvider] Auth expired for user ${userId}, token refresh failed:`, e?.message)
+      const err = new Error('Provider authentication expired')
+      err.code = 'PROVIDER_AUTH_EXPIRED'
+      err.cause = e
+      throw err
+    }
   }
 
   return {
@@ -105,18 +119,19 @@ function createNuvioProvider({ refreshToken, userId }) {
       // Transform watch progress to Stremio libraryItem shape
       const items = progress.map(p => ({
         _id: p.content_id,
-        name: '',
+        name: p.title || p.name || '',
         type: p.content_type,
         state: {
           video_id: p.video_id,
           season: p.season,
           episode: p.episode,
           timeOffset: p.position,
-          timeWatched: p.duration,
+          timeWatched: 0,
           overallTimeWatched: p.duration,
           lastWatched: new Date(p.last_watched).toISOString()
         },
-        _mtime: p.last_watched,
+        _mtime: new Date(p.last_watched).getTime(),
+        _ctime: new Date(p.last_watched).getTime(),
         removed: false
       }))
 
@@ -130,6 +145,7 @@ function createNuvioProvider({ refreshToken, userId }) {
               type: item.content_type,
               state: {},
               _mtime: Date.now(),
+              _ctime: Date.now(),
               removed: false
             })
           }
@@ -139,23 +155,7 @@ function createNuvioProvider({ refreshToken, userId }) {
       return items
     },
 
-    async getWatchedItems(page, pageSize) {
-      await ensureAuth()
-      return await supabaseRpc('sync_pull_watched_items', {
-        p_page: page || 1,
-        p_page_size: pageSize || 50,
-        p_profile_id: 1
-      }, accessToken)
-    },
-
-    async getWatchProgress() {
-      await ensureAuth()
-      return await supabaseRpc('sync_pull_watch_progress', {
-        p_profile_id: 1
-      }, accessToken)
-    },
-
-    // Library writes — NOOP (deferred)
+    // Library writes — no-op; returns null to signal "not supported". Callers guard via providerType.
     async addLibraryItem() { return null },
     async removeLibraryItem() { return null },
 

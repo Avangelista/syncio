@@ -1,5 +1,5 @@
 // Activity monitor - checks for new watch activity and sends Discord notifications
-const { createProvider } = require('../providers')
+let { createProvider } = require('../providers')
 const { postDiscord } = require('./notify')
 const { setCachedLibrary } = require('./libraryCache')
 
@@ -277,6 +277,30 @@ async function checkActivityForAccount(prisma, accountId, decrypt, getAccountId)
       // Convert map values to array for notification
       const latestActivities = Array.from(latestByUser.values())
       await sendActivityNotification(webhookUrl, latestActivities)
+    }
+
+    // After processing activities, precompute metrics for common periods
+    // This ensures both /users/metrics and /ext/metrics.json are immediately available
+    try {
+      const { setCachedMetrics } = require('./metricsCache')
+      const { buildMetricsForAccount } = require('./metricsBuilder')
+      const periods = ['1h', '12h', '1d', '3d', '7d', '30d', '90d', '1y', 'all']
+
+      for (const period of periods) {
+        try {
+          const metrics = await buildMetricsForAccount({
+            prisma,
+            accountId,
+            period,
+            decrypt
+          })
+          setCachedMetrics(accountId, period, metrics)
+        } catch (metricsError) {
+          console.warn(`[ActivityMonitor] Failed to precompute metrics for account ${accountId}, period ${period}:`, metricsError.message)
+        }
+      }
+    } catch (metricsError) {
+      console.warn(`[ActivityMonitor] Error during metrics precomputation for account ${accountId}:`, metricsError.message)
     }
   } catch (error) {
     // Silently fail - don't spam logs
@@ -699,31 +723,6 @@ async function sendActivityNotification(webhookUrl, activities) {
         avatar_url: 'https://raw.githubusercontent.com/iamneur0/syncio/refs/heads/main/client/public/logo-black.png'
       })
     }
-
-
-    // After refreshing libraries, precompute metrics for common periods
-    // This ensures both /users/metrics and /ext/metrics.json are immediately available
-    try {
-      const { setCachedMetrics } = require('./metricsCache')
-      const { buildMetricsForAccount } = require('./metricsBuilder')
-      const periods = ['1h', '12h', '1d', '3d', '7d', '30d', '90d', '1y', 'all']
-      
-      for (const period of periods) {
-        try {
-          const metrics = await buildMetricsForAccount({
-            prisma,
-            accountId,
-            period,
-            decrypt
-          })
-          setCachedMetrics(accountId, period, metrics)
-        } catch (metricsError) {
-          console.warn(`[ActivityMonitor] Failed to precompute metrics for account ${accountId}, period ${period}:`, metricsError.message)
-        }
-      }
-    } catch (metricsError) {
-      console.warn(`[ActivityMonitor] Error during metrics precomputation for account ${accountId}:`, metricsError.message)
-    }
   } catch (error) {
     // Silently fail
   }
@@ -749,7 +748,8 @@ async function checkAllAccounts(prisma, decrypt, getAccountId, AUTH_ENABLED) {
   }
 }
 
-function scheduleActivityMonitor(prisma, decrypt, getAccountId, AUTH_ENABLED) {
+function scheduleActivityMonitor(prisma, decrypt, getAccountId, AUTH_ENABLED, configuredCreateProvider) {
+  if (configuredCreateProvider) createProvider = configuredCreateProvider
   clearActivityMonitor()
   
   // Run immediately on startup to update library database

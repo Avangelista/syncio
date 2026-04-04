@@ -111,6 +111,7 @@ interface BaseEntity {
   addons?: Array<{ id: string; name: string }>
   groups?: Array<{ id: string; name: string; colorIndex?: number }>
   hasStremioConnection?: boolean
+  providerType?: string
   // User specific
   stremioAddonsCount?: number
   groupName?: string
@@ -457,7 +458,7 @@ export default function EntityCard({
                     <span className="truncate color-hover">{displayName}</span>
                   )}
                 </h3>
-                {variant === 'user' && <ProviderBadge providerType={(entity as any).providerType} size="sm" />}
+                {variant === 'user' && <ProviderBadge providerType={entity.providerType} size="sm" />}
                 {variant === 'addon' && (entity as any).version && (
                   <VersionChip version={(entity as any).version} size="sm" />
                 )}
@@ -747,7 +748,7 @@ export default function EntityCard({
                   <span className="truncate">{displayName}</span>
                 )}
               </h3>
-              {variant === 'user' && <ProviderBadge providerType={(entity as any).providerType} size="sm" />}
+              {variant === 'user' && <ProviderBadge providerType={entity.providerType} size="sm" />}
             </div>
             {/* Inline Sync Badge for groups next to name */}
             {variant === 'group' && onSync && (
@@ -996,7 +997,7 @@ export default function EntityCard({
     <ConfirmDialog
       open={confirmOpen}
       title={variant === 'group' ? "Sync will remove all users' addons" : "Sync will remove all this user's addons"}
-      description={variant === 'group' ? "This group has no addons. Syncing will delete all Stremio addons from its users. Continue?" : "This user belongs to a group with no addons. Syncing will delete all addons from this user's Stremio account. Continue?"}
+      description={variant === 'group' ? "This group has no addons. Syncing will delete all provider addons from its users. Continue?" : "This user belongs to a group with no addons. Syncing will delete all addons from this user's provider account. Continue?"}
       confirmText="Delete all and Sync"
       cancelText="Cancel"
       isDanger={true}

@@ -3,7 +3,7 @@ import { useState } from 'react'
 import { nuvioAPI } from '@/services/api'
 
 interface NuvioLoginCardProps {
-  onAuth: (data: { email: string; nuvioUserId: string; nuvioPassword: string }) => void
+  onAuth: (data: { email: string; providerUserId: string; password: string }) => void
   disabled?: boolean
   startButtonLabel?: string
 }
@@ -28,8 +28,8 @@ export function NuvioLoginCard({ onAuth, disabled = false, startButtonLabel = 'S
       if (result.valid && result.user) {
         onAuth({
           email: result.user.email,
-          nuvioUserId: result.user.id,
-          nuvioPassword: password
+          providerUserId: result.user.id,
+          password: password
         })
       } else {
         setError(result.error || 'Invalid credentials')

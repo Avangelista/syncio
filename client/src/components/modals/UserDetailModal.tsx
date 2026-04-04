@@ -42,6 +42,9 @@ interface UserDetailModalProps {
     expiresAt?: string | null
     inviteCode?: string | null
     createdAt?: string | null
+    providerType?: string
+    hasProviderConnection?: boolean
+    protectedAddons?: string | string[] | null
   } | null
   onUpdate: (userData: any) => void
   onSync: (userId: string) => void
@@ -81,6 +84,7 @@ export default function UserDetailModal({
 
   // Use the query data instead of the prop
   const currentUser = userData || user
+  const providerLabel = currentUser?.providerType === 'nuvio' ? 'Nuvio' : 'Stremio'
   const userColorIndex = currentUser?.colorIndex || 0
   const userColorStyles = useMemo(
     () => getEntityColorStyles(themeName, userColorIndex),
@@ -107,7 +111,7 @@ export default function UserDetailModal({
   const { data: libraryData, isLoading: isLoadingLibrary } = useQuery({
     queryKey: ['user', user?.id, 'library'],
     queryFn: () => usersAPI.getLibrary(user!.id),
-    enabled: !!user?.id && isOpen && !!(currentUser as any)?.hasStremioConnection,
+    enabled: !!user?.id && isOpen && !!currentUser?.hasProviderConnection,
   })
 
   // Initialize local state when opening the modal or switching user
@@ -115,7 +119,7 @@ export default function UserDetailModal({
     if (user && isOpen) {
       const excludedArray = Array.isArray(userExcludedSet) ? userExcludedSet : Array.from(userExcludedSet)
       // Prefer names coming from currentUser.protectedAddons if available
-      const protectedFromUser = (currentUser as any)?.protectedAddons
+      const protectedFromUser = currentUser?.protectedAddons
       const protectedArray = Array.isArray(protectedFromUser)
         ? protectedFromUser
         : (Array.isArray(userProtectedSet) ? userProtectedSet : Array.from(userProtectedSet))
@@ -133,7 +137,7 @@ export default function UserDetailModal({
 
   // Build a protected name set sourced from DB, with local optimistic overlay
   const protectedNameSet: Set<string> = (() => {
-    const base = new Set<string>(Array.isArray((currentUser as any)?.protectedAddons) ? (currentUser as any).protectedAddons : [])
+    const base = new Set<string>(Array.isArray(currentUser?.protectedAddons) ? currentUser.protectedAddons : [])
     // Overlay local changes
     for (const n of Array.from(localProtectedSet)) base.add(n)
     return base
@@ -292,10 +296,10 @@ export default function UserDetailModal({
         queryClient.invalidateQueries({ queryKey: ['user', currentUser.id, 'stremio-addons'] })
         queryClient.invalidateQueries({ queryKey: ['user', currentUser.id, 'user-addons'] })
         refreshAllSyncStatus(undefined, currentUser.id)
-        toast.success('Stremio addons cleared')
+        toast.success(`${providerLabel} addons cleared`)
       })
       .catch((error) => {
-        const msg = error?.response?.data?.error || error?.message || 'Failed to clear Stremio addons'
+        const msg = error?.response?.data?.error || error?.message || `Failed to clear ${providerLabel} addons`
         toast.error(msg)
       })
     return promise
@@ -436,7 +440,7 @@ export default function UserDetailModal({
           .then(() => {
             // Refresh the data from the server to ensure consistency
             queryClient.invalidateQueries({ queryKey: ['user', currentUser.id, 'stremio-addons'] })
-            toast.success('Stremio addons order updated')
+            toast.success(`${providerLabel} addons order updated`)
             refreshAllSyncStatus(undefined, currentUser.id)
           })
           .catch((error) => {
@@ -617,7 +621,7 @@ export default function UserDetailModal({
                     placeholder="Enter username..."
                     maxLength={50}
                   />
-                  <ProviderBadge providerType={(currentUser as any).providerType} size="md" />
+                  <ProviderBadge providerType={currentUser?.providerType} size="md" />
                   <SyncBadge
                     userId={currentUser.id} 
                     onSync={() => {
@@ -837,7 +841,7 @@ export default function UserDetailModal({
           </EntityList>
 
           {/* Watch History / Library Section */}
-          {(currentUser as any)?.hasStremioConnection && (() => {
+          {currentUser?.hasProviderConnection && (() => {
             // Backend already processes and sorts items correctly
             // Only keep items whose ID starts with an IMDb id ("tt...")
             const processedLibrary = (libraryData?.library || []).filter((item: any) => {
@@ -1127,7 +1131,7 @@ export default function UserDetailModal({
       <ConfirmDialog
         open={confirmDeleteAllOpen}
         title="Sync will remove all this user's addons"
-        description="This user belongs to a group with no addons. Syncing will delete all addons from this user's Stremio account. Continue?"
+        description={`This user belongs to a group with no addons. Syncing will delete all addons from this user's ${providerLabel} account. Continue?`}
         confirmText="Delete all and Sync"
         cancelText="Cancel"
         isDanger={true}

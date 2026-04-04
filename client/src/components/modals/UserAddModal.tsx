@@ -13,15 +13,7 @@ import { useBodyScrollLock } from '@/hooks/useBodyScrollLock'
 interface UserAddModalProps {
   isOpen: boolean
   onClose: () => void
-  onAddUser: (userData: {
-    username: string
-    email: string
-    password: string
-    groupId?: string
-    newGroupName?: string
-    registerNew: boolean
-    colorIndex: number
-  }) => void
+  onAddUser: (userData: Record<string, any>) => void
   isCreating: boolean
   groups?: any[]
   // For editing existing users
@@ -93,7 +85,7 @@ export default function UserAddModal({
       setSelectedGroup(editingUser.groupId || '')
       setColorIndex(editingUser.colorIndex || 0)
       setProviderType((editingUser.providerType as 'stremio' | 'nuvio') || 'stremio')
-      setAuthMode('credentials')
+      setAuthMode(editingUser.providerType === 'nuvio' ? 'oauth' : 'credentials')
       setRegisterNew(false)
       setIsCreatingNewGroup(false)
       setOauthToken(null)
@@ -150,8 +142,8 @@ export default function UserAddModal({
       setIsAuthVerified(false)
       setUsernameManuallyEdited(false)
       setProviderType('stremio')
-      setEmail('')
       setProviderUserId('')
+      setRefreshToken('')
     }
   }, [isOpen, editingUser])
 
@@ -180,9 +172,10 @@ export default function UserAddModal({
   }
 
   // Nuvio OAuth/credentials callback — store auth data
-  const handleNuvioAuth = (data: { email: string; nuvioUserId: string; nuvioPassword?: string; refreshToken?: string }) => {
+  const handleNuvioAuth = (data: { email: string; providerUserId: string; password?: string; refreshToken?: string }) => {
     setEmail(data.email)
-    setProviderUserId(data.nuvioUserId)
+    setProviderUserId(data.providerUserId)
+    if (data.password) setPassword(data.password)
     if (data.refreshToken) setRefreshToken(data.refreshToken)
     if (!usernameManuallyEdited) {
       const capitalized = data.email.split('@')[0].charAt(0).toUpperCase() + data.email.split('@')[0].slice(1)
@@ -198,10 +191,11 @@ export default function UserAddModal({
   }
 
   // Compute disabled state for submit button
-  const isSubmitDisabled = isCreating || isVerifyingAuth
+  const isSubmitDisabled = isCreating || isVerifyingAuth || !username.trim()
     || (providerType === 'stremio' && authMode === 'oauth' && (!oauthToken || !isAuthVerified))
+    || (providerType === 'stremio' && authMode === 'credentials' && !authToken.trim() && (!email.trim() || !password.trim()))
     || (providerType === 'nuvio' && authMode === 'oauth' && !providerUserId)
-    || (providerType === 'nuvio' && authMode === 'credentials' && (!email.trim() || !password.trim()))
+    || (providerType === 'nuvio' && authMode === 'credentials' && !providerUserId)
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -221,10 +215,10 @@ export default function UserAddModal({
     if (providerType === 'nuvio') {
       if (authMode === 'oauth' && !providerUserId) return
       if (authMode === 'credentials' && (!email.trim() || !password.trim())) return
-      submitData.nuvioUserId = providerUserId || undefined
-      submitData.nuvioEmail = email.trim()
-      submitData.nuvioPassword = authMode === 'credentials' ? password.trim() : undefined
-      submitData.nuvioRefreshToken = authMode === 'oauth' ? refreshToken : undefined
+      submitData.providerUserId = providerUserId || undefined
+      submitData.email = email.trim()
+      submitData.password = authMode === 'credentials' ? password.trim() : undefined
+      submitData.refreshToken = authMode === 'oauth' ? refreshToken : undefined
     } else {
       // Stremio
       if (authMode === 'oauth') {
@@ -242,6 +236,10 @@ export default function UserAddModal({
           submitData.password = password.trim()
         }
       }
+    }
+
+    if (registerNew && providerType === 'stremio') {
+      submitData.registerIfMissing = true
     }
 
     try {
@@ -264,8 +262,8 @@ export default function UserAddModal({
     setIsAuthVerified(false)
     setUsernameManuallyEdited(false)
     setProviderType('stremio')
-    setEmail('')
     setProviderUserId('')
+    setRefreshToken('')
     onClose()
   }
 
@@ -307,7 +305,6 @@ export default function UserAddModal({
             <ColorPicker
               currentColorIndex={colorIndex}
               onColorChange={(next) => {
-                setColorIndex(next)
                 setColorIndex(next)
                 setShowColorPicker(false)
               }}
@@ -402,34 +399,20 @@ export default function UserAddModal({
               </div>
 
               {authMode === 'oauth' ? (
-                <>
-                  <NuvioOAuthCard
-                    onAuth={handleNuvioAuth}
-                    disabled={isCreating}
-                    autoStart={true}
-                    withContainer={false}
-                  />
-                  {providerUserId && (
-                    <p className="text-sm text-green-600 dark:text-green-400">Nuvio account verified successfully.</p>
-                  )}
-                </>
+                <NuvioOAuthCard
+                  onAuth={handleNuvioAuth}
+                  disabled={isCreating}
+                  autoStart={true}
+                  withContainer={false}
+                />
               ) : (
-                <>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder="Email"
-                    className="w-full px-3 py-2 border rounded-lg focus:outline-none input"
-                  />
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    placeholder="Password"
-                    className="w-full px-3 py-2 border rounded-lg focus:outline-none input"
-                  />
-                </>
+                <NuvioLoginCard
+                  onAuth={handleNuvioAuth}
+                  disabled={isCreating}
+                />
+              )}
+              {providerUserId && (
+                <p className="text-sm text-green-600 dark:text-green-400">Nuvio account verified successfully.</p>
               )}
               {!editingUser && (
                 <>
@@ -507,6 +490,58 @@ export default function UserAddModal({
                       showSubmitButton={false}
                     />
                   </div>
+                  {!editingUser && (
+                    <>
+                      <div>
+                        <select
+                          value={isCreatingNewGroup ? '__create_new__' : selectedGroup}
+                          onChange={(e) => {
+                            if (e.target.value === '__create_new__') {
+                              setIsCreatingNewGroup(true)
+                              setSelectedGroup('')
+                              setNewGroupName('')
+                            } else {
+                              setIsCreatingNewGroup(false)
+                              setSelectedGroup(e.target.value)
+                              setNewGroupName('')
+                            }
+                          }}
+                          className={`w-full px-3 py-2 border rounded-lg focus:outline-none input`}
+                        >
+                          <option value="">Group (optional)</option>
+                          {groups?.map((group: any) => (
+                            <option key={group.id} value={group.id}>
+                              {group.name}
+                            </option>
+                          ))}
+                          <option value="__create_new__">+ Create new group...</option>
+                        </select>
+                        {isCreatingNewGroup && (
+                          <input
+                            type="text"
+                            value={newGroupName}
+                            onChange={(e) => setNewGroupName(e.target.value)}
+                            placeholder="Enter new group name"
+                            className={`w-full px-3 py-2 border rounded-lg focus:outline-none input mt-2`}
+                            autoFocus
+                          />
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          id="register-new-oauth"
+                          type="checkbox"
+                          checked={registerNew}
+                          onChange={(e) => setRegisterNew(e.target.checked)}
+                          className="control-radio"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <label htmlFor="register-new-oauth" className={`text-sm cursor-pointer`} onClick={() => setRegisterNew(!registerNew)}>
+                          Register
+                        </label>
+                      </div>
+                    </>
+                  )}
                 </>
               ) : authMode === 'credentials' ? (
             <>

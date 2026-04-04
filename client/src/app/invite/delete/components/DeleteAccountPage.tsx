@@ -15,7 +15,7 @@ interface DeleteUserPageProps {
   isDeleting: boolean
   onGenerateOAuth: () => void
   onAuthKey: (authKey: string) => void
-  onNuvioAuth: (data: { nuvioUserId: string; refreshToken: string }) => void
+  onNuvioAuth: (data: { providerUserId: string; refreshToken: string }) => void
   isSuccess?: boolean
   isError?: boolean
   errorMessage?: string
@@ -159,7 +159,7 @@ export function DeleteUserPage({
           </>
         ) : (
           <NuvioOAuthCard
-            onAuth={(data) => onNuvioAuth({ nuvioUserId: data.nuvioUserId, refreshToken: data.refreshToken })}
+            onAuth={(data) => onNuvioAuth({ providerUserId: data.providerUserId, refreshToken: data.refreshToken })}
             disabled={isDeleting}
             autoStart={false}
             withContainer={false}
