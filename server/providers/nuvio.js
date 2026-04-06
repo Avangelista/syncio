@@ -142,21 +142,32 @@ function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onToke
     async getLibrary() {
       await ensureAuth()
       // Combine library + watch progress to build libraryItem shape
-      const [libraryResult, progressResult] = await Promise.allSettled([
+      const [libraryResult, progressResult, watchedResult] = await Promise.allSettled([
         supabaseRpc('sync_pull_library', { p_profile_id: 1 }, accessToken),
-        supabaseRpc('sync_pull_watch_progress', { p_profile_id: 1 }, accessToken)
+        supabaseRpc('sync_pull_watch_progress', { p_profile_id: 1 }, accessToken),
+        supabaseRpc('sync_pull_watched_items', { p_profile_id: 1 }, accessToken)
       ])
       const library = libraryResult.status === 'fulfilled' ? libraryResult.value : []
       const progress = progressResult.status === 'fulfilled' ? progressResult.value : []
+      const watched = watchedResult.status === 'fulfilled' ? watchedResult.value : []
       if (libraryResult.status === 'rejected' && progressResult.status === 'rejected') {
         throw new Error('Failed to fetch library: both RPCs failed')
+      }
+
+      // Build title lookup from watched items (which have titles)
+      const titleMap = new Map()
+      if (Array.isArray(watched)) {
+        for (const w of watched) {
+          if (w.content_id && w.title) titleMap.set(w.content_id, w.title)
+        }
       }
 
       // Transform watch progress to universal libraryItem shape
       const items = progress.map(p => ({
         _id: p.content_id,
-        name: p.title || p.name || '',
+        name: p.title || p.name || titleMap.get(p.content_id) || '',
         type: p.content_type,
+        poster: null,
         state: {
           video_id: p.video_id,
           season: p.season,
@@ -177,14 +188,43 @@ function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onToke
           if (!items.find(i => i._id === item.content_id)) {
             items.push({
               _id: item.content_id,
-              name: item.title || '',
+              name: item.title || titleMap.get(item.content_id) || '',
               type: item.content_type,
+              poster: null,
               state: {},
               _mtime: Date.now(),
               _ctime: Date.now(),
               removed: false
             })
           }
+        }
+      }
+
+      // Enrich items with metadata (titles + posters) from Cinemeta
+      const seen = new Set()
+      const idsToEnrich = items.filter(i => !i.name || !i.poster).reduce((acc, i) => {
+        if (!seen.has(i._id)) { seen.add(i._id); acc.push({ id: i._id, type: i.type }) }
+        return acc
+      }, [])
+      const metaMap = new Map()
+      await Promise.allSettled(
+        idsToEnrich.map(async ({ id, type }) => {
+          try {
+            const metaType = type === 'series' ? 'series' : 'movie'
+            const res = await fetch(`https://v3-cinemeta.strem.io/meta/${metaType}/${id}.json`)
+            if (res.ok) {
+              const data = await res.json()
+              if (data?.meta) metaMap.set(id, data.meta)
+            }
+          } catch {}
+        })
+      )
+
+      for (const item of items) {
+        const meta = metaMap.get(item._id)
+        if (meta) {
+          if (!item.name) item.name = meta.name || ''
+          if (!item.poster) item.poster = meta.poster || null
         }
       }
 

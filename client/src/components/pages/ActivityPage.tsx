@@ -261,12 +261,12 @@ export default function ActivityPage() {
     if (item.temp === true) return true
     
     // Check for watch data indicators
-    const hasCtime = item._ctime && item._ctime.trim() !== ''
-    const hasLastWatched = item.state?.lastWatched && item.state.lastWatched.trim() !== ''
+    const hasCtime = item._ctime && String(item._ctime).trim() !== ''
+    const hasLastWatched = item.state?.lastWatched && String(item.state.lastWatched).trim() !== ''
     const hasTimesWatched = (item.state?.timesWatched || 0) > 0
     const hasOverallTimeWatched = (item.state?.overallTimeWatched || 0) > 0
-    const hasVideoId = item.state?.video_id && item.state.video_id.trim() !== ''
-    const hasWatchedString = item.state?.watched && item.state.watched.trim() !== ''
+    const hasVideoId = item.state?.video_id && String(item.state.video_id).trim() !== ''
+    const hasWatchedString = item.state?.watched && String(item.state.watched).trim() !== ''
     
     return hasCtime || hasLastWatched || hasTimesWatched || hasOverallTimeWatched || hasVideoId || hasWatchedString
   }
@@ -790,8 +790,8 @@ export default function ActivityPage() {
         >
           <div className="flex items-center justify-between">
             <div className="flex items-stretch flex-1 min-w-0">
-            {item.poster && (
                 <div className="relative flex-shrink-0 w-12 sm:w-16">
+                {item.poster ? (
                 <img
                   src={item.poster}
                   alt={item.name}
@@ -801,6 +801,11 @@ export default function ActivityPage() {
                     (e.target as HTMLImageElement).style.display = 'none'
                   }}
                 />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center p-1 text-center" style={{ minHeight: '60px', backgroundColor: 'var(--color-surface-secondary, #2a2a2a)' }}>
+                    <span className="text-[8px] sm:text-[10px] leading-tight color-text-secondary line-clamp-3">{item.name || 'Unknown'}</span>
+                  </div>
+                )}
                 {/* Show library icon in History view if item is in library */}
                   {viewType === 'history' && isInLibrary && (
                     <div className="absolute top-0.5 right-0.5 sm:top-1 sm:right-1 rounded-full p-0.5 sm:p-1" style={{ backgroundColor: 'var(--color-text-secondary)' }}>
@@ -808,7 +813,6 @@ export default function ActivityPage() {
                   </div>
                 )}
               </div>
-            )}
               <div className="flex-1 min-w-0 flex flex-col justify-center px-2 sm:px-4 py-2 sm:py-3">
                 <div className="flex items-center gap-1 sm:gap-2">
                 {isMovie ? (
@@ -890,8 +894,8 @@ export default function ActivityPage() {
         }`}
         style={{ width: '100%' }}
       >
-        {item.poster && (
-          <div className="w-full rounded-t overflow-hidden flex items-center justify-center bg-gray-100 dark:bg-gray-800 relative aspect-[2/3]">
+          <div className="w-full rounded-t overflow-hidden flex items-center justify-center relative aspect-[2/3]" style={{ backgroundColor: item.poster ? undefined : 'var(--color-surface-secondary, #2a2a2a)' }}>
+            {item.poster ? (
             <img
               src={item.poster}
               alt={item.name}
@@ -900,6 +904,11 @@ export default function ActivityPage() {
                 (e.target as HTMLImageElement).style.display = 'none'
               }}
             />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center p-2 text-center">
+                <span className="text-xs sm:text-sm leading-tight color-text-secondary line-clamp-4">{item.name || 'Unknown'}</span>
+              </div>
+            )}
             {/* Show library icon in History view if item is in library */}
             {viewType === 'history' && (item.removed === false || item.removed === undefined || item.removed === null) && (
               <div className="absolute top-1 right-1 sm:top-2 sm:right-2 rounded-full p-1 sm:p-1.5" style={{ backgroundColor: 'var(--color-text-secondary)' }}>
@@ -907,7 +916,6 @@ export default function ActivityPage() {
               </div>
             )}
           </div>
-        )}
         <div className="p-1 sm:p-2 text-center">
           {watchDate && (
             <div className="text-[10px] sm:text-xs color-text-secondary">
