@@ -16,7 +16,6 @@ function headers(accessToken) {
 }
 
 async function supabaseGet(table, params, accessToken) {
-  ensureConfigured()
   const query = Object.entries(params)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&')
@@ -32,7 +31,6 @@ async function supabaseGet(table, params, accessToken) {
 }
 
 async function supabasePost(table, rows, accessToken) {
-  ensureConfigured()
   const url = `${SUPABASE_URL}/rest/v1/${table}`
   const res = await fetch(url, {
     method: 'POST',
@@ -49,7 +47,6 @@ async function supabasePost(table, rows, accessToken) {
 }
 
 async function supabaseDelete(table, params, accessToken) {
-  ensureConfigured()
   const query = Object.entries(params)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&')
@@ -67,7 +64,6 @@ async function supabaseDelete(table, params, accessToken) {
 }
 
 async function supabaseRpc(fn, body, accessToken) {
-  ensureConfigured()
   const url = `${SUPABASE_URL}/rest/v1/rpc/${fn}`
   const res = await fetch(url, {
     method: 'POST',

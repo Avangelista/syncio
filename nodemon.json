@@ -1,0 +1,5 @@
+{
+  "watch": ["server/"],
+  "ignore": ["data/", "backups/", "node_modules/", "prisma/sqlite.db"],
+  "ext": "js,json"
+}

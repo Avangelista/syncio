@@ -48,7 +48,7 @@ Auth is module-level (not on the provider instance) — `nuvioAuth.js` handles v
 
 ### Multi-Provider Support
 
-- Same email can exist as both a Stremio and Nuvio user (on Postgres, unique constraint is now `accountId + email + providerType`)
+- Same email can exist as both a Stremio and Nuvio user (unique constraint now includes `providerType`)
 - User uniqueness checks are scoped by provider to prevent cross-provider conflicts
 - Fingerprint comparison uses URL-only mode for Nuvio users (Syncio controls the URL set)
 
@@ -94,7 +94,7 @@ nuvioRefreshToken  String?                        // Encrypted Supabase refresh 
 nuvioUserId        String?                        // Supabase user UUID
 ```
 
-Updated unique constraint (Postgres only): `@@unique([accountId, email, providerType])` — allows the same email across different providers.
+Updated unique constraint: `@@unique([accountId, email, providerType])` on Postgres, `@@unique([email, providerType])` on SQLite — allows the same email across different providers.
 
 ### Upgrading
 

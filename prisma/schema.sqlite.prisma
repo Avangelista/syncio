@@ -11,7 +11,7 @@ datasource db {
 model User {
   id                 String    @id @default(cuid())
   username           String    @unique
-  email              String    @unique
+  email              String
   isActive           Boolean   @default(true)
   stremioAuthKey     String? // Encrypted Stremio auth key
   providerType       String    @default("stremio") // "stremio" | "nuvio"
@@ -32,6 +32,7 @@ model User {
 
   // Relationships
 
+  @@unique([email, providerType])
   @@index([expiresAt])
   @@map("users")
 }
