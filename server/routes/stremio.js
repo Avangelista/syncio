@@ -186,15 +186,6 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
   router.post('/connect', async (req, res) => {
     try {
       const { email, password, username, groupName } = req.body;
-      console.log(`🔍 POST /api/stremio/connect called with:`, { email, username, groupName })
-      console.log(`🔍 Password length:`, password ? password.length : 'undefined')
-      console.log(`🔍 Full request body:`, req.body)
-      // Redact any sensitive fields from logs
-      try {
-        const { password: _pw, authKey: _ak, ...rest } = (req.body || {})
-        console.log(`🔍 Request fields (redacted):`, rest)
-      } catch {}
-      
       if (!email || !password) {
         return res.status(400).json({ message: !email ? 'Invalid email' : 'Password is required' });
       }
@@ -390,8 +381,6 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
 
       // Verify we have the required authentication data
       if (!authKey || !userData) {
-        console.log('Auth debug - authKey:', !!authKey, 'userData:', !!userData);
-        console.log('tempStorage keys:', Object.keys(tempStorage));
         return res.status(502).json({
           message: 'Failed to connect to Stremio',
           error: 'Authenticated but missing user data'

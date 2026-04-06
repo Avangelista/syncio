@@ -1,5 +1,4 @@
 const { StremioAPIClient } = require('stremio-api-client')
-const { createProvider } = require('../providers')
 
 /**
  * Extract base ID from item ID (removes episode/season info for series)
@@ -27,7 +26,7 @@ function extractBaseId(itemId) {
  * @param {Array} options.items - Array of { itemId, itemType, itemName, poster, addToLibrary }
  * @param {string} [options.logPrefix] - prefix for console logs
  */
-async function toggleLibraryItemsBatch({ authKey, provider: providerArg, user, decrypt, req, items, logPrefix = '[libraryToggle]' }) {
+async function toggleLibraryItemsBatch({ authKey, provider: providerArg, user, decrypt, req, createProvider, items, logPrefix = '[libraryToggle]' }) {
   if (!items || !Array.isArray(items) || items.length === 0) {
     throw new Error(`${logPrefix} items array is required`)
   }

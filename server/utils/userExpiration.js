@@ -1,5 +1,5 @@
 // User expiration cleanup system
-let { createProvider } = require('../providers')
+let createProvider = null
 const DAY_MS = 24 * 60 * 60 * 1000
 const MINUTE_MS = 60 * 1000
 
@@ -37,16 +37,7 @@ async function resetUserAddons(user, decrypt, StremioAPIClient) {
       return { success: true }
     }
 
-    // Legacy fallback: use StremioAPIClient directly if createProvider fails
-    if (user.stremioAuthKey && StremioAPIClient) {
-      const authKeyPlain = decrypt(user.stremioAuthKey, mockReq)
-      const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain })
-      const { clearAddons } = require('./addonHelpers')
-      await clearAddons(apiClient)
-      return { success: true }
-    }
-
-    return { success: false, error: 'Could not create provider or API client' }
+    return { success: false, error: 'Could not create provider' }
   } catch (error) {
     console.error(`⚠️  Error resetting addons for user ${user.id}:`, error?.message || error)
     return { success: false, error: error?.message || 'Failed to reset addons' }

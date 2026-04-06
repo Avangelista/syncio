@@ -26,7 +26,7 @@ export default function LoginPage({
   isPrivateAuth = false,
   initialMode
 }: LoginPageProps) {
-  const { isDark } = useTheme()
+  useTheme()
   const router = useRouter()
   const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === 'true'
   const [detectedPrivateAuth, setDetectedPrivateAuth] = useState<boolean | null>(null)
@@ -151,9 +151,6 @@ export default function LoginPage({
             localStorage.setItem('public-library-user', JSON.stringify(userData))
           }
           
-          // Small delay to ensure localStorage is written
-          await new Promise(resolve => setTimeout(resolve, 100))
-          
           // Show success message first
           toast.success('Welcome! You\'re now connected.')
           
@@ -227,23 +224,25 @@ export default function LoginPage({
         return
       }
 
+      const nuvioAuthKey = result.authKey
+      if (!nuvioAuthKey) {
+        toast.error('Authentication failed: missing auth key')
+        return
+      }
+
       if (typeof window !== 'undefined') {
-        const nuvioAuthKey = result.authKey || `nuvio:${data.providerUserId}`
         const userData = {
           userId: result.user.id,
           authKey: nuvioAuthKey,
           providerType: 'nuvio',
-          refreshToken: data.refreshToken,
           userInfo: result.user
         }
         localStorage.setItem('public-library-user', JSON.stringify(userData))
       }
 
-      await new Promise(resolve => setTimeout(resolve, 100))
       toast.success('Welcome! You\'re now connected.')
 
       if (onUserLogin) {
-        const nuvioAuthKey = result.authKey || `nuvio:${data.providerUserId}`
         onUserLogin(result.user.id, nuvioAuthKey, result.user)
       } else {
         window.location.href = '/user/home'

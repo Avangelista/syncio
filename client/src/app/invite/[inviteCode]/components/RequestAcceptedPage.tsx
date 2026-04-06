@@ -76,23 +76,25 @@ export function RequestAcceptedPage({
         </div>
 
         {providerType === 'nuvio' ? (
-          <NuvioOAuthCard
-            onAuth={(data) => {
-              if (onNuvioComplete) {
-                onNuvioComplete({
-                  providerType: 'nuvio',
-                  email: data.email,
-                  providerUserId: data.providerUserId,
-                  password: undefined,
-                  refreshToken: data.refreshToken,
-                })
-              }
-            }}
-            disabled={isCompleting}
-            autoStart={true}
-            withContainer={false}
-            startButtonLabel="Sign in with Nuvio"
-          />
+          <div className="p-4 rounded-lg border" style={{ borderColor: 'var(--color-border)' }}>
+            <NuvioOAuthCard
+              onAuth={(data) => {
+                if (onNuvioComplete) {
+                  onNuvioComplete({
+                    providerType: 'nuvio',
+                    email: data.email,
+                    providerUserId: data.providerUserId,
+                    password: undefined,
+                    refreshToken: data.refreshToken,
+                  })
+                }
+              }}
+              disabled={isCompleting}
+              autoStart={true}
+              withContainer={false}
+              startButtonLabel="Sign in with Nuvio"
+            />
+          </div>
         ) : (
           <>
             {!oauthLinkGenerated && !oauthLink && (

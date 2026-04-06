@@ -48,7 +48,8 @@ function makeCreateProvider({ prisma, encrypt } = {}) {
   }
 }
 
-// Backward compat: unconfigured version for direct imports (no token persistence)
+// Backward compat: unconfigured version (no token persistence on refresh).
+// Use makeCreateProvider({ prisma, encrypt }) for full functionality.
 const createProvider = makeCreateProvider()
 
 module.exports = { createProvider, makeCreateProvider }

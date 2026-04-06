@@ -10,7 +10,7 @@ function generateInviteCode() {
   return crypto.randomBytes(4).toString('base64url').substring(0, 8).toUpperCase()
 }
 
-module.exports = ({ prisma, getAccountId, AUTH_ENABLED, encrypt, decrypt, assignUserToGroup }) => {
+module.exports = ({ prisma, getAccountId, AUTH_ENABLED, encrypt, decrypt, assignUserToGroup, createProvider }) => {
   const router = express.Router()
 
   router.get('/', async (req, res) => {
@@ -418,7 +418,7 @@ module.exports = ({ prisma, getAccountId, AUTH_ENABLED, encrypt, decrypt, assign
 
       res.json(updatedRequest)
     } catch (error) {
-      console.error('Error clearing OAuth link:', error)
+      console.error('Error clearing OAuth link:', error?.message)
       res.status(500).json({ error: 'Failed to clear OAuth link' })
     }
   })
@@ -495,7 +495,7 @@ async function getStremioUserInfo(authKey, username, email) {
 
 // Public invite routes (no auth required)
 // These routes are mounted at /invite/:inviteCode/*
-module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decrypt }) => {
+module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decrypt, createProvider }) => {
   const publicRouter = express.Router()
 
   // Generate OAuth link for account deletion (public endpoint, no invite code needed)
@@ -537,10 +537,8 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
           })
         }
       } catch (error) {
-        return res.status(500).json({ 
-          error: 'Failed to generate OAuth link',
-          details: error?.message || 'Unknown error'
-        })
+        console.error('Failed to generate OAuth link:', error?.message)
+        return res.status(500).json({ error: 'Failed to generate OAuth link' })
       }
 
       res.setHeader('Content-Type', 'application/json')
@@ -550,7 +548,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
         oauthExpiresAt
       })
     } catch (error) {
-      console.error('Error in generate-oauth:', error)
+      console.error('Error in generate-oauth:', error?.message)
       res.setHeader('Content-Type', 'application/json')
       res.status(500).json({ error: 'Failed to generate OAuth link' })
     }
@@ -925,10 +923,8 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
           })
         }
       } catch (error) {
-        return res.status(500).json({ 
-          error: 'Failed to generate OAuth link',
-          details: error?.message || 'Unknown error'
-        })
+        console.error('Failed to generate OAuth link:', error?.message)
+        return res.status(500).json({ error: 'Failed to generate OAuth link' })
       }
 
       await prisma.inviteRequest.update({
@@ -952,6 +948,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
   })
 
   publicRouter.post('/:inviteCode/complete', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
     try {
       const { inviteCode } = req.params
       const { email, username, authKey, groupName, providerType: reqProviderType, providerEmail: nuvioEmail, password: nuvioPassword, providerUserId: reqNuvioUserId, refreshToken: reqNuvioRefreshToken } = req.body;
@@ -1074,7 +1071,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
               providerEmail = nuvioValidation.user.email.toLowerCase().trim()
             }
           } catch (error) {
-            console.error('Failed to validate Nuvio credentials:', error)
+            console.error('Failed to validate Nuvio credentials:', error?.message)
             return res.status(400).json({
               error: 'INVALID_AUTH_KEY',
               message: 'Could not validate Nuvio authentication. Please try again.'
@@ -1088,7 +1085,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
             providerEmail = validation.user.email.toLowerCase().trim()
           }
         } catch (error) {
-          console.error('Failed to validate Stremio auth key:', error)
+          console.error('Failed to validate Stremio auth key:', error?.message)
           return res.status(400).json({
             error: 'INVALID_AUTH_KEY',
             message: 'Could not validate Stremio authentication. Please try again.'
@@ -1161,11 +1158,12 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
       const { ensureEmailUniqueness } = require('../utils/helpers/database')
       await ensureEmailUniqueness(prisma, email, invitation.accountId)
 
-      // Check if user already exists in this account (after cleanup)
+      // Check if user already exists in this account with the same provider (after cleanup)
       const existingUser = await prisma.user.findFirst({
         where: {
           accountId: invitation.accountId,
-          email: email.trim().toLowerCase()
+          email: email.trim().toLowerCase(),
+          providerType
         }
       })
 
@@ -1290,7 +1288,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
               try {
                 const { syncUserAddons } = require('./users')
                 const reqLike = { appAccountId: invitation.accountId, headers: {} }
-                const syncResult = await syncUserAddons(prisma, newUser.id, [], false, reqLike, decrypt, () => invitation.accountId, true)
+                const syncResult = await syncUserAddons(prisma, newUser.id, [], false, reqLike, decrypt, () => invitation.accountId, true, createProvider)
                 if (syncResult?.success) {
                   console.log('✅ User synced on join')
                 } else {
@@ -1379,7 +1377,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
         }
       })
     } catch (error) {
-      console.error('Error completing invite:', error)
+      console.error('Error completing invite:', error?.message)
       res.status(500).json({ error: 'Failed to complete invite' })
     }
   })

@@ -494,6 +494,8 @@ export default function GenericEntityPage({ config }: GenericEntityPageProps) {
         // Refresh sync badges
         if (finalConfig.entityType === 'user') {
           refreshAllSyncStatus(undefined, id)
+          queryClient.invalidateQueries({ queryKey: ['user', id, 'stremio-addons'] })
+          queryClient.invalidateQueries({ queryKey: ['user', id, 'user-addons'] })
         } else if (finalConfig.entityType === 'group') {
           refreshAllSyncStatus(id)
         }

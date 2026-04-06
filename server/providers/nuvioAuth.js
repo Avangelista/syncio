@@ -18,9 +18,8 @@ async function validateNuvioCredentials(email, password) {
   })
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null)
-    const msg = body?.error_description || body?.error || body?.msg || 'unknown error'
-    console.error('Nuvio auth failed:', msg)
+    await res.text().catch(() => null)
+    console.error('Nuvio auth failed')
     throw new Error('Authentication failed')
   }
 
@@ -31,7 +30,6 @@ async function validateNuvioCredentials(email, password) {
       email: data.user?.email
     },
     tokens: {
-      accessToken: data.access_token,
       refreshToken: data.refresh_token
     }
   }
@@ -49,9 +47,8 @@ async function refreshNuvioToken(refreshToken) {
   })
 
   if (!res.ok) {
-    const body = await res.json().catch(() => null)
-    const msg = body?.error_description || body?.error || 'unknown error'
-    console.error('Nuvio token refresh failed:', msg)
+    await res.text().catch(() => null)
+    console.error('Nuvio token refresh failed')
     throw new Error('Token refresh failed')
   }
 
@@ -98,7 +95,7 @@ async function startNuvioTvLogin() {
     body: JSON.stringify({ data: { tv_client: 'syncio' } })
   })
   if (!signupRes.ok) {
-    console.error(`Nuvio anonymous signup failed: ${signupRes.status}`)
+    console.error('Nuvio anonymous signup failed')
     throw new Error('Failed to start Nuvio login session')
   }
   const signupData = await signupRes.json()
@@ -120,7 +117,7 @@ async function startNuvioTvLogin() {
     })
   })
   if (!startRes.ok) {
-    console.error(`Nuvio TV login start failed: ${startRes.status}`)
+    console.error('Nuvio TV login start failed')
     throw new Error('Failed to start Nuvio login session')
   }
   const startData = await startRes.json()
@@ -147,7 +144,7 @@ async function pollNuvioTvLogin(code, deviceNonce, anonToken) {
     body: JSON.stringify({ p_code: code, p_device_nonce: deviceNonce })
   })
   if (!res.ok) {
-    console.error(`Nuvio TV login poll failed: ${res.status}`)
+    console.error('Nuvio TV login poll failed')
     throw new Error('Failed to poll Nuvio login session')
   }
   const data = await res.json()
@@ -170,7 +167,7 @@ async function exchangeNuvioTvLogin(code, deviceNonce, anonToken) {
     body: JSON.stringify({ code, device_nonce: deviceNonce })
   })
   if (!res.ok) {
-    console.error(`Nuvio TV login exchange failed: ${res.status}`)
+    console.error('Nuvio TV login exchange failed')
     throw new Error('Failed to complete Nuvio login')
   }
   const data = await res.json()

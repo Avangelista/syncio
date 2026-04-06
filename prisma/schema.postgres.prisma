@@ -32,7 +32,7 @@ model User {
 
   // Relationships
 
-  @@unique([accountId, email])
+  @@unique([accountId, email, providerType])
   @@unique([accountId, username])
   @@index([expiresAt])
   @@map("users")

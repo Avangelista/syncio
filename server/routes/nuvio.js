@@ -23,6 +23,11 @@ async function verifyNuvioIdentity(claimedUserId, refreshTokenValue) {
   return result;
 }
 
+// In-memory cap on pending OAuth sessions per IP to prevent anonymous Supabase user spam
+const pendingOAuthSessions = new Map();
+const OAUTH_SESSION_CAP = 3;
+const OAUTH_SESSION_TTL_MS = 5 * 60 * 1000;
+
 module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
   const router = express.Router();
 
@@ -48,7 +53,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       if (msg.includes('invalid login') || msg.includes('invalid email') || msg.includes('wrong password')) {
         res.json({ valid: false, error: 'Invalid email or password' });
       } else {
-        console.error('Nuvio validation error:', error);
+        console.error('Nuvio validation error:', error?.message);
         res.json({ valid: false, error: 'Failed to validate credentials' });
       }
     }
@@ -94,7 +99,8 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
           nuvioRefreshToken: encryptedRefreshToken,
           nuvioUserId,
           email: nuvioEmail || email,
-          stremioAuthKey: null
+          stremioAuthKey: null,
+          isActive: true
         }
       });
 
@@ -106,9 +112,11 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
         }
       });
     } catch (error) {
-      console.error('Nuvio connect error:', error);
-      const status = error.status || 500;
-      res.status(status).json({ error: status === 500 ? 'Failed to connect to Nuvio' : error.message });
+      console.error('Nuvio connect error:', error.message);
+      if (error.status === 400 || error.status === 403) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      res.status(500).json({ error: 'Failed to connect to Nuvio' });
     }
   });
 
@@ -169,6 +177,9 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       let attempt = 0;
       while (await prisma.user.findFirst({ where: { accountId, username: finalUsername } })) {
         attempt++;
+        if (attempt > 100) {
+          return res.status(409).json({ error: 'Unable to generate unique username. Please specify a different username.' });
+        }
         finalUsername = `${baseUsername}${attempt}`;
       }
 
@@ -213,9 +224,11 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
         providerUserId: nuvioUserId
       });
     } catch (error) {
-      console.error('Nuvio connect-authkey error:', error);
-      const status = error.status || 500;
-      res.status(status).json({ error: status === 500 ? 'Failed to validate Nuvio credentials' : error.message });
+      console.error('Nuvio connect-authkey error:', error.message);
+      if (error.status === 400 || error.status === 403) {
+        return res.status(error.status).json({ error: error.message });
+      }
+      res.status(500).json({ error: 'Failed to validate Nuvio credentials' });
     }
   });
 
@@ -224,10 +237,23 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
   // Start a new Nuvio OAuth session
   router.post('/start-oauth', async (req, res) => {
     try {
+      // Cap pending sessions per IP to prevent anonymous Supabase user spam
+      const ip = req.ip;
+      const currentSessions = pendingOAuthSessions.get(ip) || 0;
+      if (currentSessions >= OAUTH_SESSION_CAP) {
+        return res.status(429).json({ error: 'Too many pending OAuth sessions. Please complete or wait for existing sessions to expire.' });
+      }
+
       const result = await startNuvioTvLogin()
+      pendingOAuthSessions.set(ip, currentSessions + 1);
+      setTimeout(() => {
+        const c = pendingOAuthSessions.get(ip) || 0;
+        if (c <= 1) pendingOAuthSessions.delete(ip);
+        else pendingOAuthSessions.set(ip, c - 1);
+      }, OAUTH_SESSION_TTL_MS);
       res.json(result)
     } catch (error) {
-      console.error('Nuvio start-oauth error:', error)
+      console.error('Nuvio start-oauth error:', error?.message)
       res.status(500).json({ error: 'Failed to start Nuvio OAuth' })
     }
   })
@@ -242,7 +268,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
       const result = await pollNuvioTvLogin(code, deviceNonce, anonToken)
       res.json(result)
     } catch (error) {
-      console.error('Nuvio poll-oauth error:', error)
+      console.error('Nuvio poll-oauth error:', error?.message)
       res.status(500).json({ error: 'Failed to poll Nuvio OAuth' })
     }
   })
@@ -255,13 +281,18 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt }) => {
         return res.status(400).json({ error: 'code, deviceNonce, and anonToken are required' })
       }
       const result = await exchangeNuvioTvLogin(code, deviceNonce, anonToken)
+      // Release one pending session slot for this IP
+      const ip = req.ip;
+      const c = pendingOAuthSessions.get(ip) || 0;
+      if (c <= 1) pendingOAuthSessions.delete(ip);
+      else pendingOAuthSessions.set(ip, c - 1);
       res.json({
         success: true,
         user: result.user,
         refreshToken: result.refreshToken
       })
     } catch (error) {
-      console.error('Nuvio exchange-oauth error:', error)
+      console.error('Nuvio exchange-oauth error:', error?.message)
       res.status(500).json({ error: 'Failed to exchange Nuvio OAuth' })
     }
   })

@@ -40,8 +40,17 @@ export function NuvioOAuthCard({
   const sessionRef = useRef<{ code: string; deviceNonce: string; anonToken: string } | null>(null)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const hasCompletedRef = useRef(false)
+  const isMountedRef = useRef(true)
+  const onAuthRef = useRef(onAuth)
   const retryCountRef = useRef(0)
   const MAX_RETRIES = 3
+
+  useEffect(() => { onAuthRef.current = onAuth }, [onAuth])
+
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => { isMountedRef.current = false }
+  }, [])
 
   const resetFlow = useCallback(() => {
     setIsCreating(false)
@@ -77,7 +86,11 @@ export function NuvioOAuthCard({
       setIsCreating(false)
       setIsPolling(true)
     } catch (err: any) {
-      setError(err?.response?.data?.error || err?.message || 'Failed to start Nuvio login')
+      if (err?.response?.status === 429) {
+        setError('Too many requests. Please wait a moment and try again.')
+      } else {
+        setError(err?.response?.data?.error || err?.message || 'Failed to start Nuvio login')
+      }
       setIsCreating(false)
     }
   }, [disabled, isCreating, resetFlow])
@@ -110,9 +123,12 @@ export function NuvioOAuthCard({
 
           try {
             // Exchange for tokens
-            const exchange = await nuvioAPI.exchangeOAuth(sessionRef.current!)
+            const session = sessionRef.current
+            if (!session) return
+            const exchange = await nuvioAPI.exchangeOAuth(session)
+            if (!isMountedRef.current) return
             if (exchange.success && exchange.user) {
-              await onAuth({
+              await onAuthRef.current({
                 email: exchange.user.email,
                 providerUserId: exchange.user.id,
                 refreshToken: exchange.refreshToken,
@@ -121,9 +137,13 @@ export function NuvioOAuthCard({
               setError('Failed to complete Nuvio authentication')
             }
           } catch (err: any) {
-            setError(err?.message || 'Failed to complete Nuvio authentication')
+            if (isMountedRef.current) {
+              setError(err?.message || 'Failed to complete Nuvio authentication')
+            }
           } finally {
-            setIsCompleting(false)
+            if (isMountedRef.current) {
+              setIsCompleting(false)
+            }
           }
         }
       } catch (err: any) {
@@ -140,7 +160,7 @@ export function NuvioOAuthCard({
         pollIntervalRef.current = null
       }
     }
-  }, [isPolling, onAuth])
+  }, [isPolling])
 
   // Check expiry and silently restart
   useEffect(() => {

@@ -9,24 +9,31 @@ const { refreshNuvioToken, isTokenExpired } = require('./nuvioAuth')
 function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onTokenRefresh }) {
   let accessToken = null
   let refreshToken = initialRefreshToken
+  let refreshPromise = null
 
   async function ensureAuth() {
     if (accessToken && !isTokenExpired(accessToken)) return
-    try {
-      const result = await refreshNuvioToken(refreshToken)
-      accessToken = result.access_token
-      // Persist rotated refresh token
-      if (result.refresh_token) {
-        refreshToken = result.refresh_token
-        if (onTokenRefresh) await onTokenRefresh(result.refresh_token)
+    if (refreshPromise) return refreshPromise
+    refreshPromise = (async () => {
+      try {
+        const result = await refreshNuvioToken(refreshToken)
+        accessToken = result.access_token
+        // Persist rotated refresh token
+        if (result.refresh_token) {
+          if (onTokenRefresh) await onTokenRefresh(result.refresh_token)
+          refreshToken = result.refresh_token
+        }
+      } catch (e) {
+        console.warn(`[NuvioProvider] Auth expired for user ${userId}, token refresh failed:`, e?.message)
+        const err = new Error('Provider authentication expired')
+        err.code = 'PROVIDER_AUTH_EXPIRED'
+        err.cause = e
+        throw err
+      } finally {
+        refreshPromise = null
       }
-    } catch (e) {
-      console.warn(`[NuvioProvider] Auth expired for user ${userId}, token refresh failed:`, e?.message)
-      const err = new Error('Provider authentication expired')
-      err.code = 'PROVIDER_AUTH_EXPIRED'
-      err.cause = e
-      throw err
-    }
+    })()
+    return refreshPromise
   }
 
   return {
@@ -49,7 +56,10 @@ function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onToke
         transportName: '',
         manifest: {
           id: row.url,
-          name: row.name || ''
+          name: row.name || '',
+          types: [],
+          catalogs: [],
+          resources: []
         }
       }))
       return { addons }
@@ -57,6 +67,13 @@ function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onToke
 
     async setAddons(addons) {
       await ensureAuth()
+      // Snapshot current addons before delete for rollback on failure
+      const snapshot = await supabaseGet('addons', {
+        user_id: `eq.${userId}`,
+        profile_id: 'eq.1',
+        select: '*'
+      }, accessToken)
+
       // Delete all current addons, then insert desired set
       await supabaseDelete('addons', {
         user_id: `eq.${userId}`,
@@ -72,7 +89,21 @@ function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onToke
           enabled: true,
           sort_order: i
         }))
-        await supabasePost('addons', rows, accessToken)
+        try {
+          await supabasePost('addons', rows, accessToken)
+        } catch (insertErr) {
+          // Attempt to restore previous addons
+          console.error('setAddons: insert failed after delete, attempting rollback:', insertErr?.message)
+          if (snapshot && snapshot.length > 0) {
+            try {
+              const cleanRows = snapshot.map(({ id, created_at, updated_at, ...rest }) => rest)
+              await supabasePost('addons', cleanRows, accessToken)
+            } catch (rollbackErr) {
+              console.error('setAddons: rollback also failed, user has empty addon list:', rollbackErr?.message)
+            }
+          }
+          throw insertErr
+        }
       }
     },
 
@@ -110,13 +141,18 @@ function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onToke
 
     async getLibrary() {
       await ensureAuth()
-      // Combine library + watch progress to build Stremio-compatible libraryItem shape
-      const [library, progress] = await Promise.all([
+      // Combine library + watch progress to build libraryItem shape
+      const [libraryResult, progressResult] = await Promise.allSettled([
         supabaseRpc('sync_pull_library', { p_profile_id: 1 }, accessToken),
         supabaseRpc('sync_pull_watch_progress', { p_profile_id: 1 }, accessToken)
       ])
+      const library = libraryResult.status === 'fulfilled' ? libraryResult.value : []
+      const progress = progressResult.status === 'fulfilled' ? progressResult.value : []
+      if (libraryResult.status === 'rejected' && progressResult.status === 'rejected') {
+        throw new Error('Failed to fetch library: both RPCs failed')
+      }
 
-      // Transform watch progress to Stremio libraryItem shape
+      // Transform watch progress to universal libraryItem shape
       const items = progress.map(p => ({
         _id: p.content_id,
         name: p.title || p.name || '',
@@ -127,7 +163,7 @@ function createNuvioProvider({ refreshToken: initialRefreshToken, userId, onToke
           episode: p.episode,
           timeOffset: p.position,
           timeWatched: 0,
-          overallTimeWatched: p.duration,
+          overallTimeWatched: p.position || 0,
           lastWatched: new Date(p.last_watched).toISOString()
         },
         _mtime: new Date(p.last_watched).getTime(),

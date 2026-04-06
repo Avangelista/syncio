@@ -5,10 +5,11 @@ import { useParams } from 'next/navigation'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { XCircle, CheckCircle, Clock } from 'lucide-react'
-import { invitationsAPI, usersAPI } from '@/services/api'
+import { invitationsAPI } from '@/services/api'
 import { InvitePageLayout } from './components/InvitePageLayout'
 import { RequestAccessForm } from './components/RequestAccessForm'
 import { RequestAcceptedPage } from './components/RequestAcceptedPage'
+import { RequestRenewedPage } from './components/RequestRenewedPage'
 import { StatusPage } from './components/StatusPage'
 
 export default function InviteRequestPage() {
@@ -570,8 +571,28 @@ export default function InviteRequestPage() {
         }, 500)
       }
     } catch (error: any) {
-      const errorMessage = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Failed to complete account creation'
-      toast.error(errorMessage)
+      const errorCode = error?.response?.data?.error
+      if (errorCode === 'EMAIL_MISMATCH') {
+        setEmailMismatchError(true)
+        if (typeof window !== 'undefined') {
+          const saved = localStorage.getItem(storageKey)
+          try {
+            const parsed = saved ? JSON.parse(saved) : {}
+            localStorage.setItem(storageKey, JSON.stringify({
+              ...parsed,
+              email,
+              username,
+              submitted: true,
+              emailMismatchError: true
+            }))
+          } catch {
+            // Ignore parse errors
+          }
+        }
+      } else {
+        const errorMessage = error?.response?.data?.error || error?.response?.data?.message || error?.message || 'Failed to complete account creation'
+        toast.error(errorMessage)
+      }
     } finally {
       setIsCreatingUser(false)
     }
@@ -963,11 +984,11 @@ export default function InviteRequestPage() {
         <StatusPage
           icon={XCircle}
           iconColor="text-red-500"
-          title="Wrong Stremio Account"
+          title="Wrong Account"
           borderColor="border-red-500"
         >
           <p className="text-sm mb-0" style={{ color: 'var(--color-text-secondary)' }}>
-            The request was made with a different email address than the one associated with your Stremio account.
+            The request was made with a different email address than the one associated with your account.
           </p>
           <p className="text-sm mt-2 mb-0" style={{ color: 'var(--color-text-secondary)' }}>
             Please make a new request with matching emails.
@@ -1100,6 +1121,23 @@ export default function InviteRequestPage() {
         )
       }
       
+      if (isRenewed) {
+        return (
+          <RequestRenewedPage
+            oauthLink={statusData?.oauthLink || null}
+            oauthCode={statusData?.oauthCode || null}
+            oauthExpiresAt={statusData?.oauthExpiresAt || null}
+            oauthLinkGenerated={oauthLinkGenerated}
+            oauthKeyVersion={oauthKeyVersion}
+            isGeneratingOAuth={isGeneratingOAuth}
+            isCompleting={completeMutation.isPending || isCreatingUser}
+            onGenerateOAuth={handleGenerateOAuth}
+            onAuthKey={handleOAuthAuthKey}
+            onNuvioComplete={handleNuvioComplete}
+          />
+        )
+      }
+
       return (
         <RequestAcceptedPage
           oauthLink={statusData?.oauthLink || null}

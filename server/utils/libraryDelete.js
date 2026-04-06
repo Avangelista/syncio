@@ -1,5 +1,4 @@
 const { StremioAPIClient } = require('stremio-api-client')
-const { createProvider } = require('../providers')
 
 /**
  * Mark a single library item as removed in Stremio, using the minimal-field
@@ -18,7 +17,7 @@ const { createProvider } = require('../providers')
  * @param {string} options.itemId - raw item id from route (may be URL-encoded)
  * @param {string} [options.logPrefix] - prefix for console logs
  */
-async function markLibraryItemRemoved({ authKey, provider: providerArg, user, decrypt, req, itemId, logPrefix = '[libraryDelete]' }) {
+async function markLibraryItemRemoved({ authKey, provider: providerArg, user, decrypt, req, createProvider, itemId, logPrefix = '[libraryDelete]' }) {
   if (!itemId) {
     throw new Error(`${logPrefix} itemId is required`)
   }
@@ -90,7 +89,10 @@ async function markLibraryItemRemoved({ authKey, provider: providerArg, user, de
 
   try {
     if (provider) {
-      await provider.removeLibraryItem([updatedItem])
+      const result = await provider.removeLibraryItem([updatedItem])
+      if (result === null) {
+        return { ok: true, itemId: decodedItemId, skipped: true }
+      }
     } else {
       const result = await apiClient.request('datastorePut', {
         collection: 'libraryItem',

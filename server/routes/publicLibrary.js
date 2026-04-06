@@ -11,6 +11,12 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
   const crypto = require('crypto')
   const router = express.Router();
 
+  // Prevent caching of auth-sensitive responses
+  router.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
+
   // Mint a signed Nuvio auth key — only the server can produce valid keys
   const nuvioSigningSecret = process.env.SESSION_SECRET || process.env.JWT_SECRET
   if (!nuvioSigningSecret) throw new Error('SESSION_SECRET or JWT_SECRET must be set for Nuvio auth key signing')
@@ -82,7 +88,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       let user = null
       if (stremioEmail) {
         user = await prisma.user.findFirst({
-          where: { email: stremioEmail.toLowerCase(), isActive: true, providerType: 'stremio' },
+          where: { email: stremioEmail.toLowerCase(), isActive: true, accountId: DEFAULT_ACCOUNT_ID, providerType: { in: ['stremio', null] } },
           select: userSelectFields
         });
       }
@@ -119,7 +125,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       });
       return user;
     } catch (error) {
-      console.error('Error in getPublicUser:', error);
+      console.error('Error in getPublicUser:', error?.message);
       throw error;
     }
   }
@@ -145,7 +151,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
       });
     } catch (error) {
-      console.error('Error generating OAuth link:', error);
+      console.error('Error generating OAuth link:', error?.message);
       res.status(500).json({ error: 'Failed to generate OAuth link' });
     }
   });
@@ -172,7 +178,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         authKey: result.authKey
       });
     } catch (error) {
-      console.error('Error polling OAuth:', error);
+      console.error('Error polling OAuth:', error?.message);
       res.json({ success: false, authKey: null, error: 'OAuth polling failed' });
     }
   });
@@ -211,8 +217,31 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           }
         });
 
+        if (!user) {
+          throw new Error('USER_NOT_FOUND');
+        }
+        if (!user.isActive) {
+          throw new Error('USER_NOT_ACTIVE');
+        }
+
+        // Check group membership
+        const oauthGroups = await prisma.group.findMany({
+          where: { isActive: true, accountId: user.accountId || DEFAULT_ACCOUNT_ID },
+          select: { id: true, userIds: true, accountId: true }
+        });
+        const oauthUserGroups = oauthGroups.filter(group => {
+          try {
+            const ids = typeof group.userIds === 'string' ? JSON.parse(group.userIds) : (group.userIds || []);
+            return Array.isArray(ids) && ids.includes(user.id);
+          } catch { return false; }
+        });
+        if (oauthUserGroups.length === 0) {
+          throw new Error('USER_NOT_IN_GROUP');
+        }
+        req.appAccountId = user.accountId || oauthUserGroups[0]?.accountId;
+
         // Persist rotated refresh token
-        if (user && refreshResult.refresh_token) {
+        if (refreshResult.refresh_token) {
           const userAccountId = user.accountId || DEFAULT_ACCOUNT_ID;
           await prisma.user.update({
             where: { id: user.id },
@@ -234,7 +263,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         user = await prisma.user.findFirst({
           where: {
             nuvioUserId: nuvioResult.user.id,
-            isActive: true
+            isActive: true,
+            accountId: DEFAULT_ACCOUNT_ID
           },
           select: {
             id: true, username: true, email: true, accountId: true,
@@ -315,7 +345,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         }
       });
     } catch (error) {
-      console.error('Error authenticating:', error);
+      console.error('Error authenticating:', error?.message);
       
       // Handle specific error for user not found
       if (error?.message === 'USER_NOT_FOUND') {
@@ -370,7 +400,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         }
       });
     } catch (error) {
-      console.error('Error validating user:', error);
+      console.error('Error validating user:', error?.message);
       
       // Handle specific errors
       if (error?.message === 'USER_NOT_FOUND') {
@@ -482,7 +512,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         expiresAt: user.expiresAt
       });
     } catch (error) {
-      console.error('Error getting user info:', error);
+      console.error('Error getting user info:', error?.message);
       res.status(500).json({ error: 'Failed to get user info' });
     }
   });
@@ -519,7 +549,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         activityVisibility: updatedUser.activityVisibility 
       });
     } catch (error) {
-      console.error('Error updating activity visibility:', error);
+      console.error('Error updating activity visibility:', error?.message);
       
       // Handle specific errors
       if (error?.message === 'USER_NOT_FOUND') {
@@ -614,27 +644,19 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       // Get library from cache or fetch
       let library = getCachedLibrary(user.accountId, user.id);
 
-      // Check if cache only has removed items (stale cache) - if so, refresh from Stremio
+      // Check if cache only has removed items (stale cache) - if so, refresh from provider
       // Active items: removed === false (or missing/undefined, treated as in library)
       const hasActiveItems = library && Array.isArray(library) && library.some(item => {
         return item.removed === false || item.removed === undefined || item.removed === null;
       });
 
-      console.log(`[Library Cache] User ${user.id}: cache items=${library?.length || 0}, hasActiveItems=${hasActiveItems}`)
-
       if (!library || !Array.isArray(library) || library.length === 0 || !hasActiveItems) {
-        console.log(`[Library Cache] Refreshing from Stremio for user ${user.id}`)
 
         const libraryItems = await libraryProvider.getLibrary();
 
         library = Array.isArray(libraryItems) ? libraryItems : (libraryItems?.result || libraryItems?.library || []);
         
         // Active items: removed === false (or missing/undefined, treated as in library)
-        const activeFromStremio = library.filter(item => {
-          return item.removed === false || item.removed === undefined || item.removed === null;
-        }).length
-        console.log(`[Library Cache] Stremio returned: total=${library.length}, active=${activeFromStremio}`)
-        
         if (Array.isArray(library) && library.length > 0) {
           setCachedLibrary(user.accountId, user.id, library);
         }
@@ -809,7 +831,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         count: allLibrary.length
       });
     } catch (error) {
-      console.error('Error fetching library:', error);
+      console.error('Error fetching library:', error?.message);
       res.status(500).json({ error: 'Failed to fetch library' });
     }
   });
@@ -862,7 +884,6 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       let manifest = providedManifestData;
       if (!manifest) {
         try {
-          console.log(`[public-library] Fetching manifest from server: ${addonUrl}`);
           const manifestResponse = await fetch(addonUrl, {
             headers: {
               'User-Agent': 'Syncio/1.0',
@@ -877,7 +898,6 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
             });
           }
           manifest = await manifestResponse.json();
-          console.log(`[public-library] Successfully fetched manifest server-side: ${manifest?.name || 'Unknown'}`);
         } catch (fetchError) {
           console.error('[public-library] Error fetching manifest:', fetchError);
           return res.status(400).json({ 
@@ -885,30 +905,24 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
             message: fetchError?.message || 'Unable to fetch manifest from the provided URL. Please check the URL is correct and accessible.' 
           });
         }
-      } else {
-        console.log(`[public-library] Using provided manifest data: ${manifest?.name || 'Unknown'}`);
       }
 
       // Validate manifest structure
       if (!manifest || typeof manifest !== 'object') {
-        console.error('[public-library] Invalid manifest structure:', manifest);
         return res.status(400).json({ 
           error: 'Invalid manifest format', 
           message: 'The manifest is not a valid JSON object.' 
         });
       }
 
-      // Add to Stremio using the same approach as sync (get current, add new, set collection)
+      // Add to provider using the same approach as sync (get current, add new, set collection)
       try {
-        console.log(`[public-library] Getting current Stremio addon collection`);
         // Get current addons
         const currentCollection = await addonProvider.getAddons();
         const rawAddons = currentCollection?.addons || currentCollection || [];
         const currentAddons = Array.isArray(rawAddons)
           ? rawAddons
           : (typeof rawAddons === 'object' ? Object.values(rawAddons) : []);
-        
-        console.log(`[public-library] Current addons count: ${currentAddons.length}`);
         
         // Check if addon already exists (by URL)
         const normalizedUrl = canonicalizeManifestUrl(addonUrl);
@@ -918,7 +932,6 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         });
         
         if (addonExists) {
-          console.log(`[public-library] Addon already exists in collection`);
           // Still mark as protected even if it already exists
         } else {
           // Create addon object in the format Stremio expects (same as sync)
@@ -931,16 +944,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           // Add new addon to the collection
           const updatedAddons = [...currentAddons, newAddon];
           
-          console.log(`[public-library] Setting Stremio collection with ${updatedAddons.length} addons`);
-          console.log(`[public-library] New addon: ${manifest?.name || addonUrl}`);
-          
           // Set the entire collection (like sync does)
           await addonProvider.setAddons(updatedAddons);
-          
-          console.log(`[public-library] Successfully added addon to Stremio collection`);
         }
       } catch (stremioError) {
-        console.error('[public-library] Error adding addon:', stremioError?.message);
 
         let errorMessage = 'Failed to add addon';
         if (stremioError?.message) {
@@ -984,9 +991,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         }
       });
     } catch (error) {
-      console.error('[public-library] Error adding addon:', error);
-      console.error('[public-library] Error stack:', error?.stack);
-      console.error('[public-library] Error details:', JSON.stringify(error, null, 2));
+      console.error('[public-library] Error adding addon:', error?.message);
       
       // Return more detailed error information
       const statusCode = error?.response?.status || error?.status || 500;
@@ -1061,10 +1066,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         if (errorMsg === 'USER_NOT_IN_GROUP') {
           return res.status(403).json({ error: 'USER_NOT_IN_GROUP', message: 'User is not in any active group' });
         }
-        if (errorMsg.includes('Invalid or expired Stremio auth key')) {
-          return res.status(401).json({ error: 'INVALID_AUTH_KEY', message: 'Invalid or expired Stremio auth key' });
+        if (errorMsg.includes('Invalid or expired') && errorMsg.includes('auth key')) {
+          return res.status(401).json({ error: 'INVALID_AUTH_KEY', message: 'Invalid or expired authentication' });
         }
-        console.error('Error validating user in /addons:', error);
+        console.error('Error validating user in /addons:', error?.message);
         return res.status(403).json({ error: 'Access denied', message: errorMsg });
       }
       
@@ -1194,7 +1199,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         protectedAddons: protectedAddons || []
       });
     } catch (error) {
-      console.error('Error fetching addons:', error);
+      console.error('Error fetching addons:', error?.message);
       res.status(500).json({ error: 'Failed to fetch addons' });
     }
   });
@@ -1253,7 +1258,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         excludedAddonIds: currentExcluded
       });
     } catch (error) {
-      console.error('Error excluding addon:', error);
+      console.error('Error excluding addon:', error?.message);
       res.status(500).json({ error: 'Failed to exclude addon' });
     }
   });
@@ -1310,7 +1315,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         excludedAddonIds: updatedExcluded
       });
     } catch (error) {
-      console.error('Error including addon:', error);
+      console.error('Error including addon:', error?.message);
       res.status(500).json({ error: 'Failed to include addon' });
     }
   });
@@ -1353,6 +1358,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         return res.status(400).json({ error: 'User not connected to a provider' });
       }
 
+      if (user.providerType === 'nuvio') {
+        return res.status(400).json({ error: 'Library deletion is not supported for this provider' });
+      }
+
       const { markLibraryItemRemoved } = require('../utils/libraryDelete');
 
       try {
@@ -1382,7 +1391,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         message: 'Library item deleted successfully'
       });
     } catch (error) {
-      console.error('Error deleting library item:', error);
+      console.error('Error deleting library item:', error?.message);
       res.status(500).json({ error: 'Failed to delete library item' });
     }
   });
@@ -1463,7 +1472,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         isProtected
       });
     } catch (error) {
-      console.error('Error toggling protect addon:', error);
+      console.error('Error toggling protect addon:', error?.message);
       res.status(500).json({ error: 'Failed to toggle protect addon' });
     }
   });
@@ -1548,9 +1557,9 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       // Set the filtered addons
       await removeProvider.setAddons(filteredAddons);
 
-      res.json({ message: 'Addon removed from Stremio account successfully' });
+      res.json({ message: 'Addon removed successfully' });
     } catch (error) {
-      console.error('Error removing Stremio addon:', error);
+      console.error('Error removing addon:', error?.message);
       res.status(500).json({ error: 'Failed to remove addon' });
     }
   });
@@ -1597,7 +1606,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       // Return the key
       res.json({ apiKey: key });
     } catch (error) {
-      console.error('Error generating user API key:', error);
+      console.error('Error generating user API key:', error?.message);
       res.status(500).json({ error: 'Failed to generate API key' });
     }
   });
@@ -1641,7 +1650,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         return res.json({ hasKey: false, apiKey: null });
       }
     } catch (error) {
-      console.error('Error getting user API key:', error);
+      console.error('Error getting user API key:', error?.message);
       res.status(500).json({ error: 'Failed to get API key' });
     }
   });
@@ -1669,7 +1678,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
 
       res.json({ hasKey: !!user.apiKey });
     } catch (error) {
-      console.error('Error checking user API key status:', error);
+      console.error('Error checking user API key status:', error?.message);
       res.status(500).json({ error: 'Failed to check API key status' });
     }
   });
@@ -1699,7 +1708,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
 
       res.json({ message: 'API key revoked' });
     } catch (error) {
-      console.error('Error revoking user API key:', error);
+      console.error('Error revoking user API key:', error?.message);
       res.status(500).json({ error: 'Failed to revoke API key' });
     }
   });

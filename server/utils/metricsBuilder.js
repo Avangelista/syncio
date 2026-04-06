@@ -2,9 +2,6 @@
 // Consumes cached libraries (from activityMonitor + libraryCache) and only
 // falls back to Stremio API when cache is missing.
 
-const { createProvider } = require('../providers')
-const { getCachedLibrary, setCachedLibrary } = require('./libraryCache')
-
 /**
  * Build metrics for a given account and period.
  *
@@ -285,227 +282,16 @@ async function buildMetricsForAccount({ prisma, accountId, period = '30d', decry
     // Fall through to library processing below
   }
 
-  // Fallback: If no WatchActivity data, process libraries (backward compatibility)
-  // DISABLED: Fallback is set to false to always use database metrics only
-  const shouldUseFallback = false
-  const fallbackDateLimit = new Date()
-  fallbackDateLimit.setDate(fallbackDateLimit.getDate() - 1) // Only allow fallback for today and yesterday
-  const fallbackDateLimitStr = fallbackDateLimit.toISOString().split('T')[0]
-  
-  if (shouldUseFallback) {
-  for (const user of activeUsers) {
-    try {
-      if (!user.stremioAuthKey && !user.nuvioRefreshToken) continue
-
-      // Try cached library first
-      let library = getCachedLibrary(accountId, user.id)
-
-      // If no cache, fetch via provider and cache it
-      if (!library || !Array.isArray(library) || library.length === 0) {
-        const mockReq = { appAccountId: accountId }
-        let provider
-        try {
-          provider = createProvider(user, { decrypt, req: mockReq })
-        } catch (providerError) {
-          console.warn(`[Metrics] Failed to create provider for user ${user.id}:`, providerError.message)
-          continue
-        }
-        if (!provider) continue
-
-        try {
-          const libraryItems = await provider.getLibrary()
-          if (Array.isArray(libraryItems)) {
-            library = libraryItems
-          } else if (libraryItems?.result) {
-            library = Array.isArray(libraryItems.result) ? libraryItems.result : [libraryItems.result]
-          } else if (libraryItems?.library) {
-            library = Array.isArray(libraryItems.library) ? libraryItems.library : [libraryItems.library]
-          } else {
-            library = []
-          }
-          if (library && Array.isArray(library) && library.length > 0) {
-            setCachedLibrary(accountId, user.id, library)
-          }
-        } catch (fetchError) {
-          console.warn(`[Metrics] Failed to fetch library for user ${user.id}:`, fetchError.message)
-          continue
-        }
-      }
-
-      if (!library || !Array.isArray(library) || library.length === 0) continue
-
-      watchActivityByUser[user.id] = {
-        id: user.id,
-        username: user.username || user.email,
-        movies: 0,
-        shows: 0,
-        total: 0,
-        watchTime: 0,
-        watchTimeMovies: 0,
-        watchTimeShows: 0
-      }
-      watchActivityByDayPerUser[user.id] = {}
-
-      const seriesWatchTimeByShow = {}
-
-      for (const item of library) {
-        if (!item.type) continue
-
-        let watchDate = null
-        const dates = []
-        if (item._mtime) {
-          const d = new Date(item._mtime)
-          if (!isNaN(d.getTime())) dates.push(d)
-        }
-        if (item.state?.lastWatched) {
-          const d = new Date(item.state.lastWatched)
-          if (!isNaN(d.getTime())) dates.push(d)
-        }
-        if (dates.length > 0) {
-          watchDate = new Date(Math.min(...dates.map(d => d.getTime())))
-        }
-        if (!watchDate || isNaN(watchDate.getTime())) continue
-        
-        // For fallback mode: Only process items watched recently (today/yesterday)
-        // This prevents showing inaccurate historical data when WatchActivity doesn't exist
-        const watchDateStr = watchDate.toISOString().split('T')[0]
-        if (watchDateStr < fallbackDateLimitStr) continue
-        
-        // Also respect the period filter
-        if (period !== 'all' && watchDate < startDate) continue
-
-        let watchTime = 0
-
-        if (item.type === 'series') {
-          const isEpisodeItem = item._id && item._id.includes(':') && item._id.split(':').length >= 3
-
-          if (isEpisodeItem) {
-            const showId = item._id.split(':')[0]
-            if (item.state?.timeOffset) {
-              const timeOffsetMs = parseInt(item.state.timeOffset, 10) || 0
-              const episodeWatchTime = Math.floor(timeOffsetMs / 1000)
-              if (!seriesWatchTimeByShow[showId]) {
-                seriesWatchTimeByShow[showId] = { watchTime: 0, lastWatchDate: null, hasEpisodeItems: true, totalTimeMs: 0 }
-              }
-              seriesWatchTimeByShow[showId].watchTime += episodeWatchTime
-              seriesWatchTimeByShow[showId].totalTimeMs += timeOffsetMs
-              seriesWatchTimeByShow[showId].hasEpisodeItems = true
-              if (!seriesWatchTimeByShow[showId].lastWatchDate || watchDate > seriesWatchTimeByShow[showId].lastWatchDate) {
-                seriesWatchTimeByShow[showId].lastWatchDate = watchDate
-              }
-            }
-            continue
-          } else {
-            const showId = item._id || item.id
-            if (item.state?.overallTimeWatched) {
-              const overallTimeMs = parseInt(item.state.overallTimeWatched, 10) || 0
-              const seriesWatchTime = Math.floor(overallTimeMs / 1000)
-              if (!seriesWatchTimeByShow[showId]) {
-                seriesWatchTimeByShow[showId] = { watchTime: 0, lastWatchDate: null, hasEpisodeItems: false, totalTimeMs: 0 }
-              }
-              if (!seriesWatchTimeByShow[showId].hasEpisodeItems) {
-                seriesWatchTimeByShow[showId].watchTime = seriesWatchTime
-                seriesWatchTimeByShow[showId].totalTimeMs = overallTimeMs
-                if (!seriesWatchTimeByShow[showId].lastWatchDate || watchDate > seriesWatchTimeByShow[showId].lastWatchDate) {
-                  seriesWatchTimeByShow[showId].lastWatchDate = watchDate
-                }
-              }
-            }
-            continue
-          }
-        } else if (item.type === 'movie') {
-          let watchTimeMs = 0
-          if (item.state?.overallTimeWatched) {
-            watchTimeMs = parseInt(item.state.overallTimeWatched, 10) || 0
-          } else if (item.state?.timeOffset) {
-            watchTimeMs = parseInt(item.state.timeOffset, 10) || 0
-          } else if (item.state?.timeWatched) {
-            watchTimeMs = parseInt(item.state.timeWatched, 10) || 0
-          }
-          watchTime = Math.floor(watchTimeMs / 1000)
-        }
-
-        const dayKey = watchDate.toISOString().split('T')[0]
-        if (!watchActivityByDay[dayKey]) {
-          watchActivityByDay[dayKey] = { movies: 0, shows: 0, total: 0 }
-        }
-        if (!watchTimeByDay[dayKey]) {
-          watchTimeByDay[dayKey] = 0
-        }
-        if (!watchActivityByDayPerUser[user.id][dayKey]) {
-          watchActivityByDayPerUser[user.id][dayKey] = { movies: 0, shows: 0, total: 0 }
-        }
-
-        if (item.type === 'movie') {
-          totalMovies++
-          watchActivityByUser[user.id].movies++
-          watchActivityByUser[user.id].watchTimeMovies += watchTime
-          watchActivityByDay[dayKey].movies++
-          watchActivityByDayPerUser[user.id][dayKey].movies++
-        }
-        watchActivityByUser[user.id].total++
-        watchActivityByUser[user.id].watchTime += watchTime
-        watchActivityByDay[dayKey].total++
-        watchActivityByDayPerUser[user.id][dayKey].total++
-        watchTimeByDay[dayKey] += watchTime
-        totalWatchTime += watchTime
-      }
-
-      for (const [, showData] of Object.entries(seriesWatchTimeByShow)) {
-        const watchTime = showData.watchTime
-        const showWatchDate = showData.lastWatchDate
-        const totalTimeMs = showData.totalTimeMs || 0
-        if (watchTime > 0 && showWatchDate) {
-          // For fallback mode: Only process shows watched recently (today/yesterday)
-          const showWatchDateStr = showWatchDate.toISOString().split('T')[0]
-          if (showWatchDateStr < fallbackDateLimitStr) continue
-          
-          const dayKey = showWatchDateStr
-          if (!watchActivityByDay[dayKey]) {
-            watchActivityByDay[dayKey] = { movies: 0, shows: 0, total: 0 }
-          }
-          if (!watchTimeByDay[dayKey]) {
-            watchTimeByDay[dayKey] = 0
-          }
-          if (!watchActivityByDayPerUser[user.id][dayKey]) {
-            watchActivityByDayPerUser[user.id][dayKey] = { movies: 0, shows: 0, total: 0 }
-          }
-
-          totalShows++
-          watchActivityByUser[user.id].shows++
-          watchActivityByUser[user.id].watchTimeShows += watchTime
-          watchActivityByDay[dayKey].shows++
-          watchActivityByDayPerUser[user.id][dayKey].shows++
-          watchActivityByUser[user.id].total++
-          watchActivityByUser[user.id].watchTime += watchTime
-          watchActivityByDay[dayKey].total++
-          watchActivityByDayPerUser[user.id][dayKey].total++
-          watchTimeByDay[dayKey] += watchTime
-          totalWatchTime += watchTime
-        }
-      }
-    } catch (error) {
-      console.warn(`[Metrics] Error processing user ${user.id}:`, error.message)
-      continue
-    }
-    }
-  }
-
   const userJoinsChart = Object.entries(userJoinsByDay)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([date, count]) => ({ date, count: Number(count) }))
 
-  // Filter watchActivityChart to only include dates where we have actual WatchActivity data
-  // OR if using fallback, only include recent dates (today/yesterday) or from earliest snapshot
+  // Filter watchActivityChart to only include dates from earliest WatchActivity snapshot
   const watchActivityChart = Object.entries(watchActivityByDay)
     .filter(([date]) => {
       // Always respect earliest snapshot/activity date if available
       if (earliestWatchActivityDate) {
         return date >= earliestWatchActivityDate.toISOString().split('T')[0]
-      }
-      // If no tracking data yet, only show recent dates in fallback mode
-      if (shouldUseFallback) {
-        return date >= fallbackDateLimitStr
       }
       return true
     })
@@ -520,13 +306,8 @@ async function buildMetricsForAccount({ prisma, accountId, period = '30d', decry
   // Filter watchTimeChart similarly
   const watchTimeChart = Object.entries(watchTimeByDay)
     .filter(([date]) => {
-      // Always respect earliest snapshot/activity date if available
       if (earliestWatchActivityDate) {
         return date >= earliestWatchActivityDate.toISOString().split('T')[0]
-      }
-      // If no tracking data yet, only show recent dates in fallback mode
-      if (shouldUseFallback) {
-        return date >= fallbackDateLimitStr
       }
       return true
     })
@@ -567,10 +348,6 @@ async function buildMetricsForAccount({ prisma, accountId, period = '30d', decry
           // Always respect earliest snapshot/activity date if available
           if (earliestWatchActivityDate) {
             return date >= earliestWatchActivityDate.toISOString().split('T')[0]
-          }
-          // If no tracking data yet, only show recent dates in fallback mode
-          if (shouldUseFallback) {
-            return date >= fallbackDateLimitStr
           }
           return true
         })

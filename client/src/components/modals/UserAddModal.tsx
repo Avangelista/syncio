@@ -85,7 +85,7 @@ export default function UserAddModal({
       setSelectedGroup(editingUser.groupId || '')
       setColorIndex(editingUser.colorIndex || 0)
       setProviderType((editingUser.providerType as 'stremio' | 'nuvio') || 'stremio')
-      setAuthMode(editingUser.providerType === 'nuvio' ? 'oauth' : 'credentials')
+      setAuthMode('credentials')
       setRegisterNew(false)
       setIsCreatingNewGroup(false)
       setOauthToken(null)
@@ -163,7 +163,6 @@ export default function UserAddModal({
         setIsAuthVerified(true)
       }
     } catch (error: any) {
-      console.error('OAuth verification error:', error)
       setOauthToken(null)
       setIsAuthVerified(false)
     } finally {
@@ -184,6 +183,17 @@ export default function UserAddModal({
     setIsAuthVerified(true)
   }
 
+  // Reset auth state when switching between providers
+  const handleProviderSwitch = (type: 'stremio' | 'nuvio') => {
+    setProviderType(type)
+    setOauthToken(null)
+    setIsAuthVerified(false)
+    setProviderUserId('')
+    setRefreshToken('')
+    setPassword('')
+    setAuthToken('')
+  }
+
   // Resolve group name from selection state
   const resolveGroupName = () => {
     const selectedGroupName = selectedGroup ? (groups.find((g: any) => g.id === selectedGroup)?.name || undefined) : undefined
@@ -195,7 +205,7 @@ export default function UserAddModal({
     || (providerType === 'stremio' && authMode === 'oauth' && (!oauthToken || !isAuthVerified))
     || (providerType === 'stremio' && authMode === 'credentials' && !authToken.trim() && (!email.trim() || !password.trim()))
     || (providerType === 'nuvio' && authMode === 'oauth' && !providerUserId)
-    || (providerType === 'nuvio' && authMode === 'credentials' && !providerUserId)
+    || (providerType === 'nuvio' && authMode === 'credentials' && (!isAuthVerified || !providerUserId || !email.trim() || !password.trim()))
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -245,7 +255,7 @@ export default function UserAddModal({
     try {
       ;(onAddUser as any)(submitData)
     } catch (error) {
-      console.error('Error calling onAddUser:', error)
+      // Error handled by parent
     }
   }
 
@@ -264,6 +274,7 @@ export default function UserAddModal({
     setProviderType('stremio')
     setProviderUserId('')
     setRefreshToken('')
+    setColorIndex(0)
     onClose()
   }
 
@@ -355,7 +366,7 @@ export default function UserAddModal({
             <div className="grid grid-cols-2 gap-2 w-full">
               <button
                 type="button"
-                onClick={() => setProviderType('stremio')}
+                onClick={() => handleProviderSwitch('stremio')}
                 className={`w-full py-2 px-4 rounded-lg cursor-pointer card card-selectable color-hover hover:shadow-lg transition-all ${
                   providerType === 'stremio' ? 'card-selected' : ''
                 }`}
@@ -364,7 +375,7 @@ export default function UserAddModal({
               </button>
               <button
                 type="button"
-                onClick={() => setProviderType('nuvio')}
+                onClick={() => handleProviderSwitch('nuvio')}
                 className={`w-full py-2 px-4 rounded-lg cursor-pointer card card-selectable color-hover hover:shadow-lg transition-all ${
                   providerType === 'nuvio' ? 'card-selected' : ''
                 }`}
@@ -408,6 +419,7 @@ export default function UserAddModal({
               ) : (
                 <NuvioLoginCard
                   onAuth={handleNuvioAuth}
+                  onReset={() => { setProviderUserId(''); setRefreshToken(''); setIsAuthVerified(false); setEmail(''); setPassword('') }}
                   disabled={isCreating}
                 />
               )}
@@ -480,69 +492,15 @@ export default function UserAddModal({
                 </div>
               </div>
               {authMode === 'oauth' ? (
-                <>
-                  <div className={isAuthVerified ? 'hidden' : ''}>
-                    <StremioOAuthCard
-                      active={authMode === 'oauth' && !isAuthVerified}
-                      autoStart={true}
-                      onAuthKey={handleStremioOAuth}
-                      disabled={isCreating || isVerifyingAuth}
-                      showSubmitButton={false}
-                    />
-                  </div>
-                  {!editingUser && (
-                    <>
-                      <div>
-                        <select
-                          value={isCreatingNewGroup ? '__create_new__' : selectedGroup}
-                          onChange={(e) => {
-                            if (e.target.value === '__create_new__') {
-                              setIsCreatingNewGroup(true)
-                              setSelectedGroup('')
-                              setNewGroupName('')
-                            } else {
-                              setIsCreatingNewGroup(false)
-                              setSelectedGroup(e.target.value)
-                              setNewGroupName('')
-                            }
-                          }}
-                          className={`w-full px-3 py-2 border rounded-lg focus:outline-none input`}
-                        >
-                          <option value="">Group (optional)</option>
-                          {groups?.map((group: any) => (
-                            <option key={group.id} value={group.id}>
-                              {group.name}
-                            </option>
-                          ))}
-                          <option value="__create_new__">+ Create new group...</option>
-                        </select>
-                        {isCreatingNewGroup && (
-                          <input
-                            type="text"
-                            value={newGroupName}
-                            onChange={(e) => setNewGroupName(e.target.value)}
-                            placeholder="Enter new group name"
-                            className={`w-full px-3 py-2 border rounded-lg focus:outline-none input mt-2`}
-                            autoFocus
-                          />
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <input
-                          id="register-new-oauth"
-                          type="checkbox"
-                          checked={registerNew}
-                          onChange={(e) => setRegisterNew(e.target.checked)}
-                          className="control-radio"
-                          onClick={(e) => e.stopPropagation()}
-                        />
-                        <label htmlFor="register-new-oauth" className={`text-sm cursor-pointer`} onClick={() => setRegisterNew(!registerNew)}>
-                          Register
-                        </label>
-                      </div>
-                    </>
-                  )}
-                </>
+                <div className={isAuthVerified ? 'hidden' : ''}>
+                  <StremioOAuthCard
+                    active={authMode === 'oauth' && !isAuthVerified}
+                    autoStart={true}
+                    onAuthKey={handleStremioOAuth}
+                    disabled={isCreating || isVerifyingAuth}
+                    showSubmitButton={false}
+                  />
+                </div>
               ) : authMode === 'credentials' ? (
             <>
           <div>
@@ -654,7 +612,6 @@ export default function UserAddModal({
               <button
                 type="submit"
                 disabled={isSubmitDisabled}
-                onClick={() => {}}
                 className="px-4 py-2 text-sm font-medium rounded-lg transition-colors disabled:opacity-50 color-surface hover:opacity-90"
               >
                 {isCreating ? (registerNew ? 'Registering...' : (editingUser ? 'Reconnecting...' : 'Adding...')) : (registerNew ? 'Register & Connect' : (editingUser ? 'Reconnect User' : 'Add User'))}

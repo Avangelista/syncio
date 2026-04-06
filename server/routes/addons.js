@@ -1,5 +1,4 @@
 const express = require('express');
-const { StremioAPIClient } = require('stremio-api-client');
 const { handleDatabaseError, sendError, createRouteHandler, DatabaseTransactions } = require('../utils/handlers');
 const { findAddonById, sanitizeUrl, validateAccountContext } = require('../utils/helpers');
 const { responseUtils, dbUtils } = require('../utils/routeUtils');
@@ -1287,7 +1286,7 @@ module.exports = ({ prisma, getAccountId, decrypt, encrypt, getDecryptedManifest
       });
     } catch (error) {
       console.error('Error updating addon:', error);
-      res.status(500).json({ error: 'Failed to update addon', details: error?.message });
+      res.status(500).json({ error: 'Failed to update addon' });
     }
   });
 

@@ -14,6 +14,12 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   }
 }
 
+function ensureConfigured() {
+  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+    throw new Error('Nuvio is not configured (missing NUVIO_SUPABASE_URL or NUVIO_SUPABASE_ANON_KEY)')
+  }
+}
+
 function headers(accessToken) {
   return {
     'apikey': SUPABASE_ANON_KEY,
@@ -24,14 +30,14 @@ function headers(accessToken) {
 }
 
 async function supabaseGet(table, params, accessToken) {
+  ensureConfigured()
   const query = Object.entries(params)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&')
   const url = `${SUPABASE_URL}/rest/v1/${table}?${query}`
   const res = await fetch(url, { headers: headers(accessToken) })
   if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    console.error(`Supabase GET ${table} failed (${res.status}):`, body)
+    console.error(`Supabase GET ${table} failed (${res.status})`)
     const err = new Error('Provider request failed')
     err.status = res.status
     throw err
@@ -40,6 +46,7 @@ async function supabaseGet(table, params, accessToken) {
 }
 
 async function supabasePost(table, rows, accessToken) {
+  ensureConfigured()
   const url = `${SUPABASE_URL}/rest/v1/${table}`
   const res = await fetch(url, {
     method: 'POST',
@@ -47,8 +54,7 @@ async function supabasePost(table, rows, accessToken) {
     body: JSON.stringify(rows)
   })
   if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    console.error(`Supabase POST ${table} failed (${res.status}):`, body)
+    console.error(`Supabase POST ${table} failed (${res.status})`)
     const err = new Error('Provider request failed')
     err.status = res.status
     throw err
@@ -57,6 +63,7 @@ async function supabasePost(table, rows, accessToken) {
 }
 
 async function supabaseDelete(table, params, accessToken) {
+  ensureConfigured()
   const query = Object.entries(params)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join('&')
@@ -66,8 +73,7 @@ async function supabaseDelete(table, params, accessToken) {
     headers: headers(accessToken)
   })
   if (!res.ok) {
-    const body = await res.text().catch(() => '')
-    console.error(`Supabase DELETE ${table} failed (${res.status}):`, body)
+    console.error(`Supabase DELETE ${table} failed (${res.status})`)
     const err = new Error('Provider request failed')
     err.status = res.status
     throw err
@@ -75,6 +81,7 @@ async function supabaseDelete(table, params, accessToken) {
 }
 
 async function supabaseRpc(fn, body, accessToken) {
+  ensureConfigured()
   const url = `${SUPABASE_URL}/rest/v1/rpc/${fn}`
   const res = await fetch(url, {
     method: 'POST',
@@ -82,7 +89,6 @@ async function supabaseRpc(fn, body, accessToken) {
     body: JSON.stringify(body)
   })
   if (!res.ok) {
-    const errBody = await res.text().catch(() => '')
     console.error(`Supabase RPC ${fn} failed (${res.status})`)
     const err = new Error('Provider request failed')
     err.status = res.status

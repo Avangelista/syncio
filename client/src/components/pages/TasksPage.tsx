@@ -675,7 +675,7 @@ export default function TasksPage() {
             >
               <option value="">Select a user...</option>
               {users && Array.isArray(users) && users
-                .filter((user: any) => user.stremioAuthKey) // Only show users with Stremio connection
+                .filter((user: any) => user.stremioAuthKey || user.nuvioUserId) // Only show users with provider connection
                 .map((user: any) => (
                   <option key={user.id} value={user.id}>
                     {user.username || user.email || user.id}

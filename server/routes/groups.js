@@ -2,13 +2,12 @@ const express = require('express');
 const { decrypt } = require('../utils/encryption')
 const { parseAddonIds, parseProtectedAddons, canonicalizeManifestUrl } = require('../utils/validation')
 const { StremioAPIClient } = require('stremio-api-client')
-const { createProvider } = require('../providers')
 const { handleDatabaseError, sendError } = require('../utils/handlers');
 const { findGroupById } = require('../utils/helpers');
 const { responseUtils, dbUtils } = require('../utils/routeUtils');
 
 // Export a function that returns the router, allowing dependency injection
-module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserToGroup, getDecryptedManifestUrl, manifestUrlHmac, decrypt }) => {
+module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserToGroup, getDecryptedManifestUrl, manifestUrlHmac, decrypt, createProvider }) => {
   const router = express.Router();
 
   // Shared helper: reload (advanced mode) then sync all users in a group
@@ -1104,7 +1103,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserT
       res.json(updatedGroup)
     } catch (error) {
       console.error('Error toggling group status:', error)
-      res.status(500).json({ error: 'Failed to toggle group status', details: error?.message })
+      res.status(500).json({ error: 'Failed to toggle group status' })
     }
   });
 
@@ -1143,7 +1142,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserT
       })
     } catch (error) {
       console.error('Error updating activity visibility:', error)
-      res.status(500).json({ error: 'Failed to update activity visibility', details: error?.message })
+      res.status(500).json({ error: 'Failed to update activity visibility' })
     }
   });
 
