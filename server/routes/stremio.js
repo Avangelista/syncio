@@ -112,7 +112,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
         if (authKey && accId) {
           // Ensure email uniqueness across all accounts
           const { ensureEmailUniqueness } = require('../utils/helpers/database')
-          await ensureEmailUniqueness(prisma, email, accId)
+          await ensureEmailUniqueness(prisma, email, accId, 'stremio')
 
           // Encrypt
           const encryptedAuthKey = encrypt(authKey, req)
@@ -203,14 +203,15 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
 
       // Ensure email uniqueness across all accounts
       const { ensureEmailUniqueness } = require('../utils/helpers/database')
-      await ensureEmailUniqueness(prisma, email, accountId)
+      await ensureEmailUniqueness(prisma, email, accountId, 'stremio')
 
-      // Check if user with this email already exists in this account
+      // Check if user with this email already exists in this account (scoped to stremio)
       let existingUser = null
       try {
         existingUser = await prisma.user.findFirst({
           where: {
             accountId,
+            providerType: 'stremio',
             OR: [
               { email: email },
               { username: finalUsername }
@@ -518,12 +519,13 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
       const accountId = getAccountId(req)
       const normalizedEmail = userInfo.email
 
-      // For invite-based creation, check if user with this email already exists first
+      // For invite-based creation, check if user with this email already exists first (scoped to stremio)
       if (normalizedEmail) {
         const existingUserByEmail = await prisma.user.findFirst({
           where: {
             accountId,
-            email: normalizedEmail
+            email: normalizedEmail,
+            providerType: 'stremio'
           }
         })
         if (existingUserByEmail) {
@@ -546,7 +548,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
       // Ensure email uniqueness across all accounts (if email provided)
       if (normalizedEmail) {
         const { ensureEmailUniqueness } = require('../utils/helpers/database')
-        await ensureEmailUniqueness(prisma, normalizedEmail, accountId)
+        await ensureEmailUniqueness(prisma, normalizedEmail, accountId, 'stremio')
       }
 
       // Check if user exists by username (shouldn't happen after uniqueness check, but just in case)

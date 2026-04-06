@@ -1156,7 +1156,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
       // Ensure email uniqueness across all accounts
       // If user exists in another account, delete it first
       const { ensureEmailUniqueness } = require('../utils/helpers/database')
-      await ensureEmailUniqueness(prisma, email, invitation.accountId)
+      await ensureEmailUniqueness(prisma, email, invitation.accountId, providerType)
 
       // Check if user already exists in this account with the same provider (after cleanup)
       const existingUser = await prisma.user.findFirst({

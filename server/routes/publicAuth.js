@@ -488,7 +488,7 @@ module.exports = ({ prisma, getAccountId, AUTH_ENABLED, PRIVATE_AUTH_ENABLED, PR
 
       // Ensure email uniqueness across all accounts
       const { ensureEmailUniqueness } = require('../utils/helpers/database')
-      await ensureEmailUniqueness(prisma, email, account.id)
+      await ensureEmailUniqueness(prisma, email, account.id, 'stremio')
 
       let user = null
       const existingUser = await prisma.user.findFirst({

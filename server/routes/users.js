@@ -968,12 +968,13 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, en
       }
       
       if (email !== undefined) {
-        // Check if email is already taken by another user
+        // Check if email is already taken by another user with the same provider
         const emailExists = await prisma.user.findFirst({
-          where: { 
+          where: {
             AND: [
               { email },
               { id: { not: id } },
+              { providerType: existingUser.providerType },
               ...(AUTH_ENABLED && req.appAccountId ? [{ accountId: req.appAccountId }] : [])
             ]
           }
