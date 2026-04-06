@@ -48,7 +48,7 @@ Auth is module-level (not on the provider instance) — `nuvioAuth.js` handles v
 
 ### Multi-Provider Support
 
-- Same email can exist as both a Stremio and Nuvio user (unique constraint is now `accountId + email + providerType`)
+- Same email can exist as both a Stremio and Nuvio user (on Postgres, unique constraint is now `accountId + email + providerType`)
 - User uniqueness checks are scoped by provider to prevent cross-provider conflicts
 - Fingerprint comparison uses URL-only mode for Nuvio users (Syncio controls the URL set)
 
@@ -94,41 +94,28 @@ nuvioRefreshToken  String?                        // Encrypted Supabase refresh 
 nuvioUserId        String?                        // Supabase user UUID
 ```
 
-Updated unique constraint: `@@unique([accountId, email, providerType])`
+Updated unique constraint (Postgres only): `@@unique([accountId, email, providerType])` — allows the same email across different providers.
 
-Requires a migration after pulling these changes.
+### Upgrading
+
+**Docker users:** The container runs migrations automatically on startup. Just pull the new image and restart.
+
+**Local dev users:** Run the migration manually after pulling:
+
+```bash
+# PostgreSQL
+cross-env DATABASE_URL=postgresql://syncio:syncio@localhost:5432/syncio npx prisma db push --schema prisma/schema.postgres.prisma
+
+# SQLite
+cross-env DATABASE_URL=file:./prisma/sqlite.db npx prisma db push --schema prisma/schema.sqlite.prisma
+```
 
 ## Setup Changes
 
-### New Environment Variables
-
-Two new env vars are required if you want Nuvio support:
-
-```bash
-# Nuvio / Supabase configuration (required for Nuvio provider)
-NUVIO_SUPABASE_URL=https://your-project.supabase.co
-NUVIO_SUPABASE_ANON_KEY=your-supabase-anon-key
-```
-
-If these are not set, the Nuvio provider will throw a clear error on first use. Stremio-only setups are unaffected.
-
 ### Dependency Changes
 
-- Added `cross-env` — cross-platform env variable setting (Windows compatibility)
-- Added `jest` — test framework (replaces custom test scripts)
-- npm scripts updated to use `cross-env` and `fs.copyFileSync` instead of shell-specific commands
-
-### Running Tests
-
-```bash
-npm test              # Run all tests with Jest
-npm run test:watch    # Watch mode
-```
-
-New test coverage for:
-- Provider factory logic (`server/__tests__/providers/factory.test.js`)
-- Nuvio data transforms (`server/__tests__/providers/nuvioTransform.test.js`)
-- Sync fingerprinting (`server/__tests__/sync/fingerprint.test.js`)
+- Added `cross-env` and `shx` — cross-platform env variable setting and shell commands (Windows compatibility)
+- npm scripts updated to use `shx cp` and `cross-env` instead of Unix-specific `cp` and bare env vars
 
 ## Other Changes
 
@@ -137,3 +124,4 @@ New test coverage for:
 - `RequestRenewedPage` component for renewed invite handling
 - Nuvio connect endpoint now sets `isActive: true` on the user
 - Username generation capped at 100 attempts to prevent infinite loops
+- Removed legacy test scripts (custom test suites replaced upstream)

@@ -3,22 +3,8 @@
  * All Nuvio API calls go through these functions.
  */
 
-const SUPABASE_URL = process.env.NUVIO_SUPABASE_URL
-const SUPABASE_ANON_KEY = process.env.NUVIO_SUPABASE_ANON_KEY
-
-if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  // Only throw if Nuvio features are actually needed — checked at first use
-  // Log a warning at startup so operators know
-  if (process.env.NODE_ENV !== 'test') {
-    console.warn('Warning: NUVIO_SUPABASE_URL and/or NUVIO_SUPABASE_ANON_KEY not set. Nuvio provider will not work.')
-  }
-}
-
-function ensureConfigured() {
-  if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-    throw new Error('Nuvio is not configured (missing NUVIO_SUPABASE_URL or NUVIO_SUPABASE_ANON_KEY)')
-  }
-}
+const SUPABASE_URL = process.env.NUVIO_SUPABASE_URL || 'https://dpyhjjcoabcglfmgecug.supabase.co'
+const SUPABASE_ANON_KEY = process.env.NUVIO_SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRweWhqamNvYWJjZ2xmbWdlY3VnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA3ODYyNDcsImV4cCI6MjA4NjM2MjI0N30.U-3QSNDdpsnvRk_7ZL419AFTOtggHJJcmkodxeXjbkg'
 
 function headers(accessToken) {
   return {
