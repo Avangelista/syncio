@@ -311,7 +311,9 @@ export default function SettingsPage() {
   const [webhookUrl, setWebhookUrl] = React.useState<string>('')
   const autoGenAttemptedRef = React.useRef<boolean>(false)
   const [revealedFields, setRevealedFields] = React.useState<Set<string>>(new Set())
-  
+  const [mounted, setMounted] = React.useState(false)
+  React.useEffect(() => { setMounted(true) }, [])
+
   // Account management confirmation modals
   const [confirmOpen, setConfirmOpen] = React.useState(false)
   const [confirmConfig, setConfirmConfig] = React.useState<{ title: string; description: string; isDanger?: boolean; onConfirm: () => void }>({ title: '', description: '', isDanger: true, onConfirm: () => {} })
@@ -837,6 +839,8 @@ export default function SettingsPage() {
       }
     })
   }
+
+  if (!mounted) return null
 
   return (
     <div ref={containerRef} className="p-4 sm:p-6 relative" style={{ scrollbarGutter: 'stable' }}>

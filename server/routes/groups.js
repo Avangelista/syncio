@@ -7,7 +7,7 @@ const { findGroupById } = require('../utils/helpers');
 const { responseUtils, dbUtils } = require('../utils/routeUtils');
 
 // Export a function that returns the router, allowing dependency injection
-module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserToGroup, getDecryptedManifestUrl, manifestUrlHmac, decrypt }) => {
+module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserToGroup, getDecryptedManifestUrl, manifestUrlHmac, decrypt, createProvider }) => {
   const router = express.Router();
 
   // Shared helper: reload (advanced mode) then sync all users in a group
@@ -87,7 +87,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserT
         // Pre-compute current/desired and alreadySynced using the same comparator as the badge
         const userRec = await prisma.user.findUnique({
           where: { id: uid, accountId: getAccountId(req) },
-          select: { id: true, stremioAuthKey: true, excludedAddons: true, protectedAddons: true, isActive: true }
+          select: { id: true, stremioAuthKey: true, excludedAddons: true, protectedAddons: true, isActive: true, providerType: true, nuvioRefreshToken: true, nuvioUserId: true }
         })
         if (!userRec || userRec.isActive === false) { failed++; continue }
 
@@ -99,6 +99,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserT
           parseProtectedAddons,
           canonicalizeManifestUrl,
           StremioAPIClient,
+          createProvider,
           unsafeMode,
           useCustomFields
         })
@@ -833,6 +834,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserT
         getDecryptedManifestUrl: (addon) => addon?.manifestUrl,
         canonicalizeManifestUrl,
         StremioAPIClient,
+        createProvider,
       })
 
       const aggregated = await getGroupSyncStatus(id, req)
@@ -1101,7 +1103,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserT
       res.json(updatedGroup)
     } catch (error) {
       console.error('Error toggling group status:', error)
-      res.status(500).json({ error: 'Failed to toggle group status', details: error?.message })
+      res.status(500).json({ error: 'Failed to toggle group status' })
     }
   });
 
@@ -1140,7 +1142,7 @@ module.exports = ({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserT
       })
     } catch (error) {
       console.error('Error updating activity visibility:', error)
-      res.status(500).json({ error: 'Failed to update activity visibility', details: error?.message })
+      res.status(500).json({ error: 'Failed to update activity visibility' })
     }
   });
 

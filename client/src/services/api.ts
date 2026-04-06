@@ -39,15 +39,18 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    // Only log out on actual authentication errors, not on Stremio connection errors
-    const isStremioEndpoint = error.config?.url?.includes('/stremio/') || 
-                             error.config?.url?.includes('/stremio-addons') ||
-                             error.config?.url?.includes('/connect-stremio') ||
-                             error.config?.url?.includes('/clear-stremio-credentials') ||
-                             error.config?.url?.includes('/stremio-credentials')
-    
+    // Only log out on actual authentication errors, not on provider connection errors
+    const isProviderEndpoint = error.config?.url?.includes('/stremio/') ||
+                              error.config?.url?.includes('/nuvio/') ||
+                              error.config?.url?.includes('/stremio-addons') ||
+                              error.config?.url?.includes('/connect-stremio') ||
+                              error.config?.url?.includes('/connect-nuvio') ||
+                              error.config?.url?.includes('/clear-stremio-credentials') ||
+                              error.config?.url?.includes('/clear-nuvio-credentials') ||
+                              error.config?.url?.includes('/stremio-credentials')
+
     // Admin auth: 401 errors
-    if (error.response?.status === 401 && !isStremioEndpoint) {
+    if (error.response?.status === 401 && !isProviderEndpoint) {
       if (typeof window !== 'undefined') {
         try {
           window.dispatchEvent(new CustomEvent('sfm:auth:changed', { detail: { authed: false } }))
@@ -101,6 +104,10 @@ export interface CreateUserData {
   username?: string
   groupName?: string
   colorIndex?: number
+  providerType?: 'stremio' | 'nuvio'
+  providerUserId?: string
+  refreshToken?: string
+  registerIfMissing?: boolean
 }
 
 export interface StremioAuthVerification {
@@ -216,8 +223,30 @@ export const usersAPI = {
     return response.data
   },
 
-  // Create new user (via Stremio connect endpoint)
+  // Create new user (via Stremio or Nuvio connect endpoint)
   create: async (userData: CreateUserData): Promise<User> => {
+    // Nuvio provider path
+    if (userData.providerType === 'nuvio') {
+      const payload: any = {
+        email: userData.email,
+        username: userData.username,
+        groupName: userData.groupName,
+        colorIndex: userData.colorIndex,
+        create: true,
+      }
+      if (userData.password) {
+        payload.password = userData.password
+      }
+      if (userData.providerUserId) {
+        payload.providerUserId = userData.providerUserId
+      }
+      if (userData.refreshToken) {
+        payload.refreshToken = userData.refreshToken
+      }
+      const response: AxiosResponse<any> = await api.post('/nuvio/connect-authkey', payload)
+      return response.data?.user || response.data
+    }
+
     if (userData.authKey) {
       const payload: any = {
         authKey: userData.authKey,
@@ -244,7 +273,7 @@ export const usersAPI = {
     }
 
     // If registerIfMissing is true, call the register endpoint directly instead of connect
-    const shouldRegister = (userData as any).registerIfMissing === true
+    const shouldRegister = userData.registerIfMissing === true
     if (shouldRegister) {
       const response: AxiosResponse<any> = await api.post('/stremio/register', payload)
       return response.data?.user || response.data
@@ -282,7 +311,7 @@ export const usersAPI = {
         let wasDisabled = false
         
         // Temporarily enable user if they're disabled (required for addon clearing)
-        if (user && !user.isActive && user.hasStremioConnection) {
+        if (user && !user.isActive && (user.hasStremioConnection || user.hasProviderConnection)) {
           wasDisabled = true
           await usersAPI.enable(id)
         }
@@ -504,7 +533,7 @@ export const usersAPI = {
     
     // Extract filename from Content-Disposition header
     const contentDisposition = response.headers['content-disposition']
-    let filename = `Stremio-Library-${userId}.json`
+    let filename = `Syncio-Library-${userId}.json`
     if (contentDisposition) {
       const filenameMatch = contentDisposition.match(/filename="?(.+?)"?$/i)
       if (filenameMatch) {
@@ -805,6 +834,30 @@ export const stremioAPI = {
   },
 }
 
+// Nuvio API
+export const nuvioAPI = {
+  validate: async (credentials: { email: string; password: string }): Promise<{ valid: boolean; user?: any; error?: string }> => {
+    const response: AxiosResponse<{ valid: boolean; user?: any; error?: string }> = await api.post('/nuvio/validate', credentials)
+    return response.data
+  },
+  connect: async (data: { userId: string; email: string; password: string }): Promise<any> => {
+    const response: AxiosResponse<any> = await api.post('/nuvio/connect', data)
+    return response.data
+  },
+  startOAuth: async (): Promise<any> => {
+    const response: AxiosResponse<any> = await api.post('/nuvio/start-oauth')
+    return response.data
+  },
+  pollOAuth: async (data: { code: string; deviceNonce: string; anonToken: string }): Promise<any> => {
+    const response: AxiosResponse<any> = await api.post('/nuvio/poll-oauth', data)
+    return response.data
+  },
+  exchangeOAuth: async (data: { code: string; deviceNonce: string; anonToken: string }): Promise<any> => {
+    const response: AxiosResponse<any> = await api.post('/nuvio/exchange-oauth', data)
+    return response.data
+  },
+}
+
 // Public Auth API (for AUTH_ENABLED=true)
 export const publicAuthAPI = {
   register: async (payload: { uuid: string; password: string }): Promise<{ message: string; account: any }> => {
@@ -1033,12 +1086,20 @@ export const invitationsAPI = {
   },
 
   // Public: Complete OAuth and create user
-  complete: async (inviteCode: string, email: string, username: string, authKey: string, groupName?: string): Promise<any> => {
+  complete: async (inviteCode: string, email: string, username: string, authKey: string, groupName?: string, providerData?: { providerType: string; providerEmail?: string; password?: string; providerUserId?: string; refreshToken?: string }): Promise<any> => {
+    const body: any = { email, username, authKey, groupName }
+    if (providerData) {
+      body.providerType = providerData.providerType
+      if (providerData.providerEmail) body.providerEmail = providerData.providerEmail
+      if (providerData.password) body.password = providerData.password
+      if (providerData.providerUserId) body.providerUserId = providerData.providerUserId
+      if (providerData.refreshToken) body.refreshToken = providerData.refreshToken
+    }
     const response = await fetch(`/invite/${inviteCode}/complete`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ email, username, authKey, groupName })
+      body: JSON.stringify(body)
     })
     if (!response.ok) {
       const error = await response.json().catch(() => ({ error: `HTTP ${response.status}` }))
@@ -1049,13 +1110,19 @@ export const invitationsAPI = {
     return response.json()
   },
 
-  // Public: Delete user via OAuth
-  deleteUser: async (authKey: string): Promise<any> => {
+  // Public: Delete user via OAuth (Stremio or Nuvio)
+  deleteUser: async (authKey?: string, nuvioData?: { providerUserId: string; refreshToken: string }): Promise<any> => {
+    const body: any = {}
+    if (authKey) body.authKey = authKey
+    if (nuvioData) {
+      body.providerUserId = nuvioData.providerUserId
+      body.refreshToken = nuvioData.refreshToken
+    }
     const response = await fetch(`/invite/delete-user`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ authKey })
+      body: JSON.stringify(body)
     })
     
     const contentType = response.headers.get('content-type')
@@ -1109,6 +1176,17 @@ export const publicLibraryAPI = {
   // Authenticate with OAuth and get/create user
   authenticate: async (authKey: string): Promise<any> => {
     const response: AxiosResponse<any> = await api.post(`/public-library/authenticate`, { authKey })
+    return response.data
+  },
+
+  // Authenticate with Nuvio credentials or OAuth userId
+  authenticateNuvio: async (email: string, password?: string, providerUserId?: string, refreshToken?: string): Promise<any> => {
+    const body: any = { providerType: 'nuvio' }
+    if (providerUserId) body.providerUserId = providerUserId
+    if (email) body.email = email
+    if (password) body.password = password
+    if (refreshToken) body.refreshToken = refreshToken
+    const response: AxiosResponse<any> = await api.post(`/public-library/authenticate`, body)
     return response.data
   },
 

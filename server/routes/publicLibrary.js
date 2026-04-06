@@ -1,21 +1,82 @@
 const express = require('express');
-const { StremioAPIClient } = require('stremio-api-client');
 const { validateStremioAuthKey } = require('../utils/stremio');
-const { encrypt, decrypt } = require('../utils/encryption');
 const { canonicalizeManifestUrl } = require('../utils/validation');
 
 /**
  * Public Library Router - Allows users to access their library via OAuth
  * without requiring account authentication. Addons added are marked as protected.
  */
-module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibrary, setCachedLibrary }) => {
+module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibrary, setCachedLibrary, createProvider }) => {
   const { findLatestEpisode } = require('../utils/libraryHelpers')
+  const crypto = require('crypto')
   const router = express.Router();
 
-  // Helper to get existing user from Stremio auth (does NOT create new users)
+  // Prevent caching of auth-sensitive responses
+  router.use((req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
+
+  // Mint a signed Nuvio auth key — only the server can produce valid keys
+  const nuvioSigningSecret = process.env.SESSION_SECRET || process.env.JWT_SECRET
+  if (!nuvioSigningSecret) throw new Error('SESSION_SECRET or JWT_SECRET must be set for Nuvio auth key signing')
+
+  function signNuvioAuthKey(nuvioUserId) {
+    const hmac = crypto.createHmac('sha256', nuvioSigningSecret).update(nuvioUserId).digest('hex')
+    return `nuvio:${nuvioUserId}:${hmac}`
+  }
+
+  const userSelectFields = {
+    id: true, username: true, email: true, accountId: true,
+    stremioAuthKey: true, isActive: true, protectedAddons: true,
+    providerType: true, nuvioRefreshToken: true, nuvioUserId: true
+  }
+
+  // Helper to validate a user is active and in at least one group
+  async function validateUserMembership(user) {
+    if (!user) throw new Error('USER_NOT_FOUND')
+    if (!user.isActive) throw new Error('USER_NOT_ACTIVE')
+
+    const groups = await prisma.group.findMany({
+      where: { isActive: true, accountId: user.accountId || DEFAULT_ACCOUNT_ID },
+      select: { id: true, userIds: true, accountId: true }
+    })
+    const userGroups = groups.filter(group => {
+      if (!group.userIds) return false
+      try {
+        const userIds = JSON.parse(group.userIds)
+        return Array.isArray(userIds) && userIds.includes(user.id)
+      } catch (e) {
+        return false
+      }
+    })
+    if (userGroups.length === 0) {
+      throw new Error('USER_NOT_IN_GROUP')
+    }
+    return user
+  }
+
+  // Helper to get existing user — supports both Stremio auth keys and Nuvio synthetic keys
   async function getPublicUser(authKey, req) {
     try {
-      // Validate auth key
+      // --- Nuvio path: signed key format "nuvio:{userId}:{hmac}" ---
+      if (authKey && authKey.startsWith('nuvio:')) {
+        const parts = authKey.slice(6).split(':')
+        const nuvioUserId = parts[0]
+        const providedHmac = parts[1]
+        // Verify HMAC — only the server can mint valid nuvio: keys
+        const expectedHmac = crypto.createHmac('sha256', nuvioSigningSecret).update(nuvioUserId).digest('hex')
+        const hmacValid = providedHmac && providedHmac.length === expectedHmac.length &&
+          crypto.timingSafeEqual(Buffer.from(providedHmac), Buffer.from(expectedHmac))
+        if (!hmacValid) throw new Error('USER_NOT_FOUND')
+        const user = await prisma.user.findFirst({
+          where: { nuvioUserId, isActive: true, accountId: DEFAULT_ACCOUNT_ID },
+          select: userSelectFields
+        })
+        return await validateUserMembership(user)
+      }
+
+      // --- Stremio path ---
       const validation = await validateStremioAuthKey(authKey);
       if (!validation || !validation.user) {
         throw new Error('Invalid or expired Stremio auth key');
@@ -24,123 +85,47 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       const stremioUser = validation.user;
       const stremioEmail = stremioUser.email || null;
 
-      // Try to find existing user by email (search across all accounts first to get the user's accountId)
       let user = null
       if (stremioEmail) {
         user = await prisma.user.findFirst({
-          where: {
-            email: stremioEmail.toLowerCase(),
-            isActive: true  // Only find active users
-          },
-          select: {
-            id: true,
-            username: true,
-            email: true,
-            accountId: true,  // Include accountId to use for group lookup
-            stremioAuthKey: true,
-            isActive: true,
-            protectedAddons: true
-          }
+          where: { email: stremioEmail.toLowerCase(), isActive: true, accountId: DEFAULT_ACCOUNT_ID, providerType: { in: ['stremio', null] } },
+          select: userSelectFields
         });
       }
 
-      // If user not found, throw error
-      if (!user) {
-        throw new Error('USER_NOT_FOUND');
+      await validateUserMembership(user)
+
+      // Don't overwrite Nuvio users' credentials with Stremio auth keys
+      if (user.providerType === 'nuvio') {
+        return user
       }
 
-      // Check if user is active (double check even though we filtered)
-      if (!user.isActive) {
-        throw new Error('USER_NOT_ACTIVE');
-      }
-
-      // Check if user belongs to at least one active group
-      // Check across all accounts (not just user's accountId) to handle cases where
-      // user's accountId might be 'default' but groups are in other accounts
-      const groups = await prisma.group.findMany({
-        where: {
-          isActive: true
-        },
-        select: {
-          id: true,
-          userIds: true,
-          accountId: true
-        }
-      });
-
-      // Find groups that contain this user (same logic as getGroupMembers)
-      const userGroups = groups.filter(group => {
-        if (!group.userIds) return false
-        try {
-          const userIds = JSON.parse(group.userIds)
-          return Array.isArray(userIds) && userIds.includes(user.id)
-        } catch (e) {
-          console.error(`[getPublicUser] Error parsing userIds for group ${group.id}:`, e)
-          return false
-        }
-      })
-
-      if (userGroups.length === 0) {
-        const userAccountId = user.accountId || DEFAULT_ACCOUNT_ID;
-        console.error(`[getPublicUser] User ${user.id} (${user.email}) not found in any active group. User accountId: ${userAccountId}, Total groups checked: ${groups.length}`)
-        throw new Error('USER_NOT_IN_GROUP');
-      }
-
-      // Use the user's accountId for encryption/decryption
       const userAccountId = user.accountId || DEFAULT_ACCOUNT_ID;
 
-      // Check if found user's auth key matches
+      // Check if auth key matches
       if (user.stremioAuthKey) {
         try {
-          // Create a mock request for decrypt (needs accountId)
           const mockReq = { appAccountId: userAccountId };
           const storedAuthKey = decrypt(user.stremioAuthKey, mockReq);
           if (storedAuthKey === authKey) {
-            // User exists, is active, and auth key matches
             return user;
           }
         } catch (e) {
-          // Decryption failed, might be different encryption or user
-          // Still allow login if user exists (auth key might have been updated)
+          // Decryption failed — continue to update
         }
       }
 
-      // If user exists but auth key doesn't match, update it
+      // Update auth key if it doesn't match
       const mockReq = { appAccountId: userAccountId };
       const encryptedAuthKey = encrypt(authKey, mockReq);
       user = await prisma.user.update({
         where: { id: user.id },
-        data: {
-          stremioAuthKey: encryptedAuthKey,
-          isActive: true  // Ensure user is active
-        },
-        select: {
-          id: true,
-          username: true,
-          email: true,
-          stremioAuthKey: true,
-          isActive: true,
-          protectedAddons: true
-        }
+        data: { stremioAuthKey: encryptedAuthKey, isActive: true },
+        select: userSelectFields
       });
       return user;
     } catch (error) {
-      console.error('Error in getPublicUser:', error);
-      throw error;
-    }
-  }
-
-  // Helper to get or create user from Stremio auth (kept for backward compatibility if needed elsewhere)
-  async function getOrCreatePublicUser(authKey, req) {
-    try {
-      // First try to get existing user
-      return await getPublicUser(authKey, req);
-    } catch (error) {
-      // If user not found, don't create - rethrow the error
-      if (error.message === 'USER_NOT_FOUND') {
-        throw error;
-      }
-      // For other errors, also rethrow
+      console.error('Error in getPublicUser:', error?.message);
       throw error;
     }
   }
@@ -155,8 +140,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       
       if (!result || !result.success || !result.code || !result.link) {
         return res.status(500).json({
-          error: 'Failed to generate OAuth link - Stremio API returned invalid response',
-          details: result
+          error: 'Failed to generate OAuth link - Stremio API returned invalid response'
         });
       }
 
@@ -167,8 +151,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         expiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
       });
     } catch (error) {
-      console.error('Error generating OAuth link:', error);
-      res.status(500).json({ error: 'Failed to generate OAuth link', message: error?.message });
+      console.error('Error generating OAuth link:', error?.message);
+      res.status(500).json({ error: 'Failed to generate OAuth link' });
     }
   });
 
@@ -194,20 +178,140 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         authKey: result.authKey
       });
     } catch (error) {
-      console.error('Error polling OAuth:', error);
-      res.json({ success: false, authKey: null, error: error?.message });
+      console.error('Error polling OAuth:', error?.message);
+      res.json({ success: false, authKey: null, error: 'OAuth polling failed' });
     }
   });
 
   // Authenticate with OAuth and get/create user
   router.post('/authenticate', async (req, res) => {
     try {
-      const { authKey } = req.body;
-      if (!authKey) {
-        return res.status(400).json({ error: 'Auth key is required' });
-      }
+      const { authKey, email: nuvioEmail, password: nuvioPassword, providerUserId: nuvioUserId, refreshToken: clientRefreshToken } = req.body;
 
-      const user = await getPublicUser(authKey, req);
+      let user;
+      if (nuvioUserId && clientRefreshToken) {
+        // Nuvio OAuth path — verify refresh token is valid before accepting
+        const { refreshNuvioToken, parseJwtPayload } = require('../providers/nuvioAuth');
+        let refreshResult;
+        try {
+          refreshResult = await refreshNuvioToken(clientRefreshToken);
+        } catch (e) {
+          return res.status(401).json({ error: 'Invalid or expired Nuvio token' });
+        }
+        // Verify the token actually belongs to the claimed user
+        const jwtPayload = parseJwtPayload(refreshResult.access_token);
+        if (!jwtPayload || jwtPayload.sub !== nuvioUserId) {
+          return res.status(403).json({ error: 'Token does not match the claimed user identity' });
+        }
+
+        user = await prisma.user.findFirst({
+          where: {
+            nuvioUserId,
+            isActive: true,
+            accountId: DEFAULT_ACCOUNT_ID
+          },
+          select: {
+            id: true, username: true, email: true, accountId: true,
+            stremioAuthKey: true, isActive: true, protectedAddons: true,
+            providerType: true, nuvioRefreshToken: true, nuvioUserId: true
+          }
+        });
+
+        if (!user) {
+          throw new Error('USER_NOT_FOUND');
+        }
+        if (!user.isActive) {
+          throw new Error('USER_NOT_ACTIVE');
+        }
+
+        // Check group membership
+        const oauthGroups = await prisma.group.findMany({
+          where: { isActive: true, accountId: user.accountId || DEFAULT_ACCOUNT_ID },
+          select: { id: true, userIds: true, accountId: true }
+        });
+        const oauthUserGroups = oauthGroups.filter(group => {
+          try {
+            const ids = typeof group.userIds === 'string' ? JSON.parse(group.userIds) : (group.userIds || []);
+            return Array.isArray(ids) && ids.includes(user.id);
+          } catch { return false; }
+        });
+        if (oauthUserGroups.length === 0) {
+          throw new Error('USER_NOT_IN_GROUP');
+        }
+        req.appAccountId = user.accountId || oauthUserGroups[0]?.accountId;
+
+        // Persist rotated refresh token
+        if (refreshResult.refresh_token) {
+          const userAccountId = user.accountId || DEFAULT_ACCOUNT_ID;
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { nuvioRefreshToken: encrypt(refreshResult.refresh_token, { appAccountId: userAccountId }) }
+          });
+        }
+      } else if (nuvioUserId && !clientRefreshToken) {
+        // nuvioUserId alone is not sufficient — reject
+        return res.status(400).json({ error: 'Refresh token is required for Nuvio authentication' });
+      } else if (nuvioEmail && nuvioPassword) {
+        // Nuvio credentials path
+        const { validateNuvioCredentials } = require('../providers/nuvioAuth');
+        const nuvioResult = await validateNuvioCredentials(nuvioEmail, nuvioPassword);
+        if (!nuvioResult || !nuvioResult.user) {
+          return res.status(401).json({ error: 'Invalid Nuvio credentials' });
+        }
+
+        // Find user by nuvioUserId
+        user = await prisma.user.findFirst({
+          where: {
+            nuvioUserId: nuvioResult.user.id,
+            isActive: true,
+            accountId: DEFAULT_ACCOUNT_ID
+          },
+          select: {
+            id: true, username: true, email: true, accountId: true,
+            stremioAuthKey: true, isActive: true, protectedAddons: true,
+            providerType: true, nuvioRefreshToken: true, nuvioUserId: true
+          }
+        });
+
+        if (!user) {
+          throw new Error('USER_NOT_FOUND');
+        }
+        if (!user.isActive) {
+          throw new Error('USER_NOT_ACTIVE');
+        }
+
+        // Persist fresh tokens from credentials login
+        if (nuvioResult.tokens?.refreshToken) {
+          const userAccountId = user.accountId || DEFAULT_ACCOUNT_ID;
+          await prisma.user.update({
+            where: { id: user.id },
+            data: { nuvioRefreshToken: encrypt(nuvioResult.tokens.refreshToken, { appAccountId: userAccountId }) }
+          });
+        }
+
+        // Check group membership (same logic as getPublicUser)
+        const groups = await prisma.group.findMany({
+          where: { isActive: true, accountId: user.accountId || DEFAULT_ACCOUNT_ID },
+          select: { id: true, userIds: true, accountId: true }
+        });
+        const userGroups = groups.filter(group => {
+          try {
+            const ids = typeof group.userIds === 'string' ? JSON.parse(group.userIds) : (group.userIds || []);
+            return Array.isArray(ids) && ids.includes(user.id);
+          } catch { return false; }
+        });
+        if (userGroups.length === 0) {
+          throw new Error('USER_NOT_IN_GROUP');
+        }
+
+        // Set accountId on req for downstream use
+        req.appAccountId = user.accountId || userGroups[0]?.accountId;
+      } else if (authKey) {
+        // Stremio authentication path (existing)
+        user = await getPublicUser(authKey, req);
+      } else {
+        return res.status(400).json({ error: 'Auth key or Nuvio credentials are required' });
+      }
       
       // Fetch full user details including createdAt and expiresAt
       const fullUser = await prisma.user.findUnique({
@@ -222,9 +326,15 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         }
       });
       
+      // Build signed auth key for Nuvio users so client doesn't construct it
+      const responseAuthKey = (user.providerType === 'nuvio' && user.nuvioUserId)
+        ? signNuvioAuthKey(user.nuvioUserId)
+        : authKey
+
       // Return user info (without sensitive data)
       res.json({
         success: true,
+        authKey: responseAuthKey,
         user: {
           id: fullUser.id,
           username: fullUser.username,
@@ -235,7 +345,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         }
       });
     } catch (error) {
-      console.error('Error authenticating:', error);
+      console.error('Error authenticating:', error?.message);
       
       // Handle specific error for user not found
       if (error?.message === 'USER_NOT_FOUND') {
@@ -263,7 +373,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       
       res.status(401).json({ 
         error: 'Authentication failed', 
-        message: error?.message || 'Invalid Stremio auth key' 
+        message: 'Authentication failed'
       });
     }
   });
@@ -271,34 +381,14 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
   // Validate user session (check if user exists, is active, and is in a group)
   router.post('/validate', async (req, res) => {
     try {
-      const { authKey, userId } = req.body;
-      
-      if (!authKey && !userId) {
-        return res.status(400).json({ error: 'Auth key or user ID is required' });
-      }
+      const { authKey } = req.body;
 
-      // If userId is provided, we need to get the authKey from the user
-      let authKeyToValidate = authKey;
-      if (!authKeyToValidate && userId) {
-        const user = await prisma.user.findUnique({
-          where: { id: userId },
-          select: { stremioAuthKey: true, accountId: true }
-        });
-        
-        if (!user || !user.stremioAuthKey) {
-          return res.status(403).json({ 
-            error: 'USER_NOT_FOUND',
-            message: 'Your account is not registered with Syncio. Please contact an administrator to be added to a Syncio group first.' 
-          });
-        }
-        
-        // Decrypt the auth key
-        const mockReq = { appAccountId: user.accountId || DEFAULT_ACCOUNT_ID };
-        authKeyToValidate = decrypt(user.stremioAuthKey, mockReq);
+      if (!authKey) {
+        return res.status(400).json({ error: 'Auth key is required' });
       }
 
       // Validate using getPublicUser which checks existence, active status, and group membership
-      const user = await getPublicUser(authKeyToValidate, req);
+      const user = await getPublicUser(authKey, req);
       
       res.json({
         success: true,
@@ -310,7 +400,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         }
       });
     } catch (error) {
-      console.error('Error validating user:', error);
+      console.error('Error validating user:', error?.message);
       
       // Handle specific errors
       if (error?.message === 'USER_NOT_FOUND') {
@@ -336,7 +426,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       
       res.status(401).json({ 
         error: 'Validation failed',
-        message: error?.message || 'Invalid user session'
+        message: 'Failed to validate user session'
       });
     }
   });
@@ -422,8 +512,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         expiresAt: user.expiresAt
       });
     } catch (error) {
-      console.error('Error getting user info:', error);
-      res.status(500).json({ error: 'Failed to get user info', message: error?.message });
+      console.error('Error getting user info:', error?.message);
+      res.status(500).json({ error: 'Failed to get user info' });
     }
   });
 
@@ -459,7 +549,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         activityVisibility: updatedUser.activityVisibility 
       });
     } catch (error) {
-      console.error('Error updating activity visibility:', error);
+      console.error('Error updating activity visibility:', error?.message);
       
       // Handle specific errors
       if (error?.message === 'USER_NOT_FOUND') {
@@ -483,7 +573,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         });
       }
       
-      res.status(500).json({ error: 'Failed to update activity visibility', message: error?.message });
+      res.status(500).json({ error: 'Failed to update activity visibility' });
     }
   });
 
@@ -504,7 +594,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           stremioAuthKey: true,
           isActive: true,
           accountId: true,
-          activityVisibility: true
+          activityVisibility: true,
+          providerType: true,
+          nuvioRefreshToken: true,
+          nuvioUserId: true
         }
       });
 
@@ -543,41 +636,27 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         return res.status(403).json({ error: 'Access denied: User library is private' });
       }
 
-      if (!user.stremioAuthKey) {
-        return res.status(400).json({ error: 'User not connected to Stremio' });
+      const libraryProvider = createProvider(user, { decrypt, req });
+      if (!libraryProvider) {
+        return res.status(400).json({ error: 'User not connected to a provider' });
       }
 
       // Get library from cache or fetch
       let library = getCachedLibrary(user.accountId, user.id);
-      
-      // Check if cache only has removed items (stale cache) - if so, refresh from Stremio
+
+      // Check if cache only has removed items (stale cache) - if so, refresh from provider
       // Active items: removed === false (or missing/undefined, treated as in library)
       const hasActiveItems = library && Array.isArray(library) && library.some(item => {
         return item.removed === false || item.removed === undefined || item.removed === null;
       });
-      
-      console.log(`[Library Cache] User ${user.id}: cache items=${library?.length || 0}, hasActiveItems=${hasActiveItems}`)
-      
-      if (!library || !Array.isArray(library) || library.length === 0 || !hasActiveItems) {
-        console.log(`[Library Cache] Refreshing from Stremio for user ${user.id}`)
-        const mockReq = { appAccountId: user.accountId };
-        const authKeyPlain = decrypt(user.stremioAuthKey, mockReq);
-        const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain });
 
-        const libraryItems = await apiClient.request('datastoreGet', {
-          collection: 'libraryItem',
-          ids: [],
-          all: true
-        });
+      if (!library || !Array.isArray(library) || library.length === 0 || !hasActiveItems) {
+
+        const libraryItems = await libraryProvider.getLibrary();
 
         library = Array.isArray(libraryItems) ? libraryItems : (libraryItems?.result || libraryItems?.library || []);
         
         // Active items: removed === false (or missing/undefined, treated as in library)
-        const activeFromStremio = library.filter(item => {
-          return item.removed === false || item.removed === undefined || item.removed === null;
-        }).length
-        console.log(`[Library Cache] Stremio returned: total=${library.length}, active=${activeFromStremio}`)
-        
         if (Array.isArray(library) && library.length > 0) {
           setCachedLibrary(user.accountId, user.id, library);
         }
@@ -752,8 +831,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         count: allLibrary.length
       });
     } catch (error) {
-      console.error('Error fetching library:', error);
-      res.status(500).json({ error: 'Failed to fetch library', message: error?.message });
+      console.error('Error fetching library:', error?.message);
+      res.status(500).json({ error: 'Failed to fetch library' });
     }
   });
 
@@ -777,7 +856,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           stremioAuthKey: true,
           isActive: true,
           accountId: true,
-          protectedAddons: true
+          protectedAddons: true,
+          providerType: true,
+          nuvioRefreshToken: true,
+          nuvioUserId: true
         }
       });
 
@@ -790,10 +872,11 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      if (!user.stremioAuthKey) {
-        return res.status(400).json({ 
-          error: 'User not connected to Stremio',
-          message: 'User not connected to Stremio. Please connect your Stremio account first.' 
+      const addonProvider = createProvider(user, { decrypt, req });
+      if (!addonProvider) {
+        return res.status(400).json({
+          error: 'User not connected to a provider',
+          message: 'User not connected to a provider. Please connect your account first.'
         });
       }
 
@@ -801,7 +884,6 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       let manifest = providedManifestData;
       if (!manifest) {
         try {
-          console.log(`[public-library] Fetching manifest from server: ${addonUrl}`);
           const manifestResponse = await fetch(addonUrl, {
             headers: {
               'User-Agent': 'Syncio/1.0',
@@ -816,7 +898,6 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
             });
           }
           manifest = await manifestResponse.json();
-          console.log(`[public-library] Successfully fetched manifest server-side: ${manifest?.name || 'Unknown'}`);
         } catch (fetchError) {
           console.error('[public-library] Error fetching manifest:', fetchError);
           return res.status(400).json({ 
@@ -824,34 +905,24 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
             message: fetchError?.message || 'Unable to fetch manifest from the provided URL. Please check the URL is correct and accessible.' 
           });
         }
-      } else {
-        console.log(`[public-library] Using provided manifest data: ${manifest?.name || 'Unknown'}`);
       }
 
       // Validate manifest structure
       if (!manifest || typeof manifest !== 'object') {
-        console.error('[public-library] Invalid manifest structure:', manifest);
         return res.status(400).json({ 
           error: 'Invalid manifest format', 
           message: 'The manifest is not a valid JSON object.' 
         });
       }
 
-      // Add to Stremio using the same approach as sync (get current, add new, set collection)
-      const mockReq = { appAccountId: user.accountId };
-      const authKeyPlain = decrypt(user.stremioAuthKey, mockReq);
-      const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain });
-      
+      // Add to provider using the same approach as sync (get current, add new, set collection)
       try {
-        console.log(`[public-library] Getting current Stremio addon collection`);
         // Get current addons
-        const currentCollection = await apiClient.request('addonCollectionGet', {});
+        const currentCollection = await addonProvider.getAddons();
         const rawAddons = currentCollection?.addons || currentCollection || [];
         const currentAddons = Array.isArray(rawAddons)
           ? rawAddons
           : (typeof rawAddons === 'object' ? Object.values(rawAddons) : []);
-        
-        console.log(`[public-library] Current addons count: ${currentAddons.length}`);
         
         // Check if addon already exists (by URL)
         const normalizedUrl = canonicalizeManifestUrl(addonUrl);
@@ -861,7 +932,6 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         });
         
         if (addonExists) {
-          console.log(`[public-library] Addon already exists in collection`);
           // Still mark as protected even if it already exists
         } else {
           // Create addon object in the format Stremio expects (same as sync)
@@ -874,21 +944,12 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           // Add new addon to the collection
           const updatedAddons = [...currentAddons, newAddon];
           
-          console.log(`[public-library] Setting Stremio collection with ${updatedAddons.length} addons`);
-          console.log(`[public-library] New addon: ${manifest?.name || addonUrl}`);
-          
           // Set the entire collection (like sync does)
-          await apiClient.request('addonCollectionSet', { addons: updatedAddons });
-          
-          console.log(`[public-library] Successfully added addon to Stremio collection`);
+          await addonProvider.setAddons(updatedAddons);
         }
       } catch (stremioError) {
-        console.error('[public-library] Error adding addon to Stremio:', stremioError);
-        console.error('[public-library] Stremio error details:', JSON.stringify(stremioError, null, 2));
-        console.error('[public-library] Stremio error stack:', stremioError?.stack);
-        
-        // Check if it's a specific Stremio API error
-        let errorMessage = 'Failed to add addon to Stremio';
+
+        let errorMessage = 'Failed to add addon';
         if (stremioError?.message) {
           errorMessage = stremioError.message;
         } else if (stremioError?.error) {
@@ -899,7 +960,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         }
         
         return res.status(400).json({ 
-          error: 'Failed to add addon to Stremio', 
+          error: 'Failed to add addon',
           message: errorMessage 
         });
       }
@@ -930,9 +991,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         }
       });
     } catch (error) {
-      console.error('[public-library] Error adding addon:', error);
-      console.error('[public-library] Error stack:', error?.stack);
-      console.error('[public-library] Error details:', JSON.stringify(error, null, 2));
+      console.error('[public-library] Error adding addon:', error?.message);
       
       // Return more detailed error information
       const statusCode = error?.response?.status || error?.status || 500;
@@ -972,20 +1031,24 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         // If no authKey provided, get it from the user's stored key (for backward compatibility)
         const user = await prisma.user.findUnique({
           where: { id: userId },
-          select: { stremioAuthKey: true, accountId: true, isActive: true }
+          select: { stremioAuthKey: true, accountId: true, isActive: true, providerType: true, nuvioRefreshToken: true, nuvioUserId: true }
         });
-        
+
         if (!user || !user.isActive) {
           return res.status(404).json({ error: 'User not found or inactive' });
         }
-        
-        if (!user.stremioAuthKey) {
-          return res.status(400).json({ error: 'User not connected to Stremio' });
+
+        if (!createProvider(user, { decrypt, req })) {
+          return res.status(400).json({ error: 'User not connected to a provider' });
         }
-        
-        // Decrypt the stored auth key
-        const mockReq = { appAccountId: user.accountId || DEFAULT_ACCOUNT_ID };
-        authKeyToValidate = decrypt(user.stremioAuthKey, mockReq);
+
+        // Build auth key for validation
+        if (user.providerType === 'nuvio' && user.nuvioUserId) {
+          authKeyToValidate = signNuvioAuthKey(user.nuvioUserId);
+        } else {
+          const mockReq = { appAccountId: user.accountId || DEFAULT_ACCOUNT_ID };
+          authKeyToValidate = decrypt(user.stremioAuthKey, mockReq);
+        }
       }
 
       // Validate user exists, is active, and is in a group
@@ -1003,10 +1066,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         if (errorMsg === 'USER_NOT_IN_GROUP') {
           return res.status(403).json({ error: 'USER_NOT_IN_GROUP', message: 'User is not in any active group' });
         }
-        if (errorMsg.includes('Invalid or expired Stremio auth key')) {
-          return res.status(401).json({ error: 'INVALID_AUTH_KEY', message: 'Invalid or expired Stremio auth key' });
+        if (errorMsg.includes('Invalid or expired') && errorMsg.includes('auth key')) {
+          return res.status(401).json({ error: 'INVALID_AUTH_KEY', message: 'Invalid or expired authentication' });
         }
-        console.error('Error validating user in /addons:', error);
+        console.error('Error validating user in /addons:', error?.message);
         return res.status(403).json({ error: 'Access denied', message: errorMsg });
       }
       
@@ -1023,7 +1086,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           isActive: true,
           accountId: true,
           excludedAddons: true,
-          protectedAddons: true
+          protectedAddons: true,
+          providerType: true,
+          nuvioRefreshToken: true,
+          nuvioUserId: true
         }
       });
 
@@ -1031,8 +1097,9 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         return res.status(404).json({ error: 'User not found or inactive' });
       }
 
-      if (!fullUser.stremioAuthKey) {
-        return res.status(400).json({ error: 'User not connected to Stremio' });
+      const addonsProvider = createProvider(fullUser, { decrypt, req });
+      if (!addonsProvider) {
+        return res.status(400).json({ error: 'User not connected to a provider' });
       }
 
       // Use the user's accountId (not just DEFAULT_ACCOUNT_ID)
@@ -1091,13 +1158,9 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       // Get user's current Stremio addons with proper error handling
       let stremioAddons = [];
       try {
-        const mockReq = { appAccountId: userAccountId };
-        const authKeyPlain = decrypt(fullUser.stremioAuthKey, mockReq);
-        const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain });
-        
-        const stremioAddonsResponse = await apiClient.request('addonCollectionGet', {});
-        stremioAddons = Array.isArray(stremioAddonsResponse) 
-          ? stremioAddonsResponse 
+        const stremioAddonsResponse = await addonsProvider.getAddons();
+        stremioAddons = Array.isArray(stremioAddonsResponse)
+          ? stremioAddonsResponse
           : (stremioAddonsResponse?.addons || []);
       } catch (stremioError) {
         const errorMsg = stremioError?.message || stremioError?.error || String(stremioError || '');
@@ -1136,8 +1199,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         protectedAddons: protectedAddons || []
       });
     } catch (error) {
-      console.error('Error fetching addons:', error);
-      res.status(500).json({ error: 'Failed to fetch addons', message: error?.message });
+      console.error('Error fetching addons:', error?.message);
+      res.status(500).json({ error: 'Failed to fetch addons' });
     }
   });
 
@@ -1195,8 +1258,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         excludedAddonIds: currentExcluded
       });
     } catch (error) {
-      console.error('Error excluding addon:', error);
-      res.status(500).json({ error: 'Failed to exclude addon', message: error?.message });
+      console.error('Error excluding addon:', error?.message);
+      res.status(500).json({ error: 'Failed to exclude addon' });
     }
   });
 
@@ -1252,8 +1315,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         excludedAddonIds: updatedExcluded
       });
     } catch (error) {
-      console.error('Error including addon:', error);
-      res.status(500).json({ error: 'Failed to include addon', message: error?.message });
+      console.error('Error including addon:', error?.message);
+      res.status(500).json({ error: 'Failed to include addon' });
     }
   });
 
@@ -1274,7 +1337,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           id: true,
           stremioAuthKey: true,
           isActive: true,
-          accountId: true
+          accountId: true,
+          providerType: true,
+          nuvioRefreshToken: true,
+          nuvioUserId: true
         }
       });
 
@@ -1287,19 +1353,20 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      if (!user.stremioAuthKey) {
-        return res.status(400).json({ error: 'User not connected to Stremio' });
+      const deleteProvider = createProvider(user, { decrypt, req });
+      if (!deleteProvider) {
+        return res.status(400).json({ error: 'User not connected to a provider' });
       }
 
-      // Decrypt auth key
-      const mockReq = { appAccountId: DEFAULT_ACCOUNT_ID };
-      const authKeyPlain = decrypt(user.stremioAuthKey, mockReq);
+      if (user.providerType === 'nuvio') {
+        return res.status(400).json({ error: 'Library deletion is not supported for this provider' });
+      }
 
       const { markLibraryItemRemoved } = require('../utils/libraryDelete');
 
       try {
         await markLibraryItemRemoved({
-          authKey: authKeyPlain,
+          provider: deleteProvider,
           itemId,
           logPrefix: '[public-library]'
         });
@@ -1312,7 +1379,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           });
         }
         console.error('[public-library] Error deleting library item via helper:', deleteError);
-        return res.status(500).json({ error: 'Failed to delete library item', message: deleteError?.message });
+        return res.status(500).json({ error: 'Failed to delete library item' });
       }
 
       // Clear the cache for this user
@@ -1324,8 +1391,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         message: 'Library item deleted successfully'
       });
     } catch (error) {
-      console.error('Error deleting library item:', error);
-      res.status(500).json({ error: 'Failed to delete library item', message: error?.message });
+      console.error('Error deleting library item:', error?.message);
+      res.status(500).json({ error: 'Failed to delete library item' });
     }
   });
 
@@ -1405,8 +1472,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         isProtected
       });
     } catch (error) {
-      console.error('Error toggling protect addon:', error);
-      res.status(500).json({ error: 'Failed to toggle protect addon', message: error?.message });
+      console.error('Error toggling protect addon:', error?.message);
+      res.status(500).json({ error: 'Failed to toggle protect addon' });
     }
   });
 
@@ -1428,7 +1495,10 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
           accountId: true,
           stremioAuthKey: true,
           isActive: true,
-          protectedAddons: true
+          protectedAddons: true,
+          providerType: true,
+          nuvioRefreshToken: true,
+          nuvioUserId: true
         }
       });
 
@@ -1441,13 +1511,14 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      if (!user.stremioAuthKey) {
-        return res.status(400).json({ error: 'User not connected to Stremio' });
+      const removeProvider = createProvider(user, { decrypt, req });
+      if (!removeProvider) {
+        return res.status(400).json({ error: 'User not connected to a provider' });
       }
 
       const normalizeName = (n) => String(n || '').trim().toLowerCase();
       const targetNameNormalized = normalizeName(addonName);
-      
+
       // First, unprotect the addon if it's in the protected list (so user can delete their own protected addons)
       let userProtectedNames = [];
       try {
@@ -1458,7 +1529,7 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       } catch {
         userProtectedNames = [];
       }
-      
+
       // Remove from protected list if present
       const updatedProtectedNames = userProtectedNames.filter(n => normalizeName(n) !== targetNameNormalized);
       if (updatedProtectedNames.length !== userProtectedNames.length) {
@@ -1470,13 +1541,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         });
       }
 
-      // Decrypt auth key and delete from Stremio
-      const mockReq = { appAccountId: DEFAULT_ACCOUNT_ID };
-      const authKeyPlain = decrypt(user.stremioAuthKey, mockReq);
-      const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain });
-
       // Get current collection
-      const current = await apiClient.request('addonCollectionGet', {});
+      const current = await removeProvider.getAddons();
       const currentAddonsRaw = current?.addons || current || [];
       const currentAddons = Array.isArray(currentAddonsRaw)
         ? currentAddonsRaw
@@ -1489,12 +1555,12 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       });
 
       // Set the filtered addons
-      await apiClient.request('addonCollectionSet', { addons: filteredAddons });
+      await removeProvider.setAddons(filteredAddons);
 
-      res.json({ message: 'Addon removed from Stremio account successfully' });
+      res.json({ message: 'Addon removed successfully' });
     } catch (error) {
-      console.error('Error removing Stremio addon:', error);
-      res.status(500).json({ error: 'Failed to remove addon', message: error?.message });
+      console.error('Error removing addon:', error?.message);
+      res.status(500).json({ error: 'Failed to remove addon' });
     }
   });
 
@@ -1540,8 +1606,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
       // Return the key
       res.json({ apiKey: key });
     } catch (error) {
-      console.error('Error generating user API key:', error);
-      res.status(500).json({ error: 'Failed to generate API key', message: error?.message });
+      console.error('Error generating user API key:', error?.message);
+      res.status(500).json({ error: 'Failed to generate API key' });
     }
   });
 
@@ -1584,8 +1650,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
         return res.json({ hasKey: false, apiKey: null });
       }
     } catch (error) {
-      console.error('Error getting user API key:', error);
-      res.status(500).json({ error: 'Failed to get API key', message: error?.message });
+      console.error('Error getting user API key:', error?.message);
+      res.status(500).json({ error: 'Failed to get API key' });
     }
   });
 
@@ -1612,8 +1678,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
 
       res.json({ hasKey: !!user.apiKey });
     } catch (error) {
-      console.error('Error checking user API key status:', error);
-      res.status(500).json({ error: 'Failed to check API key status', message: error?.message });
+      console.error('Error checking user API key status:', error?.message);
+      res.status(500).json({ error: 'Failed to check API key status' });
     }
   });
 
@@ -1642,8 +1708,8 @@ module.exports = ({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibra
 
       res.json({ message: 'API key revoked' });
     } catch (error) {
-      console.error('Error revoking user API key:', error);
-      res.status(500).json({ error: 'Failed to revoke API key', message: error?.message });
+      console.error('Error revoking user API key:', error?.message);
+      res.status(500).json({ error: 'Failed to revoke API key' });
     }
   });
 

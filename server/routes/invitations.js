@@ -10,7 +10,7 @@ function generateInviteCode() {
   return crypto.randomBytes(4).toString('base64url').substring(0, 8).toUpperCase()
 }
 
-module.exports = ({ prisma, getAccountId, AUTH_ENABLED, encrypt, decrypt, assignUserToGroup }) => {
+module.exports = ({ prisma, getAccountId, AUTH_ENABLED, encrypt, decrypt, assignUserToGroup, createProvider }) => {
   const router = express.Router()
 
   router.get('/', async (req, res) => {
@@ -418,7 +418,7 @@ module.exports = ({ prisma, getAccountId, AUTH_ENABLED, encrypt, decrypt, assign
 
       res.json(updatedRequest)
     } catch (error) {
-      console.error('Error clearing OAuth link:', error)
+      console.error('Error clearing OAuth link:', error?.message)
       res.status(500).json({ error: 'Failed to clear OAuth link' })
     }
   })
@@ -495,7 +495,7 @@ async function getStremioUserInfo(authKey, username, email) {
 
 // Public invite routes (no auth required)
 // These routes are mounted at /invite/:inviteCode/*
-module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decrypt }) => {
+module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decrypt, createProvider }) => {
   const publicRouter = express.Router()
 
   // Generate OAuth link for account deletion (public endpoint, no invite code needed)
@@ -525,23 +525,20 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
             // 5 min expiry - convert to ISO string for JSON serialization
             oauthExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
           } else {
-            return res.status(500).json({ 
-              error: 'Failed to generate OAuth link - Stremio API returned invalid response',
-              details: stremioData?.error?.message || 'Missing code or link in response'
+            return res.status(500).json({
+              error: 'Failed to generate OAuth link - Stremio API returned invalid response'
             })
           }
         } else {
           const errorText = await stremioResponse.text()
-          return res.status(500).json({ 
-            error: 'Failed to generate OAuth link from Stremio',
-            details: `HTTP ${stremioResponse.status}: ${errorText}`
+          console.error('Stremio OAuth link generation failed:', stremioResponse.status, errorText)
+          return res.status(500).json({
+            error: 'Failed to generate OAuth link from Stremio'
           })
         }
       } catch (error) {
-        return res.status(500).json({ 
-          error: 'Failed to generate OAuth link',
-          details: error?.message || 'Unknown error'
-        })
+        console.error('Failed to generate OAuth link:', error?.message)
+        return res.status(500).json({ error: 'Failed to generate OAuth link' })
       }
 
       res.setHeader('Content-Type', 'application/json')
@@ -551,7 +548,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
         oauthExpiresAt
       })
     } catch (error) {
-      console.error('Error in generate-oauth:', error)
+      console.error('Error in generate-oauth:', error?.message)
       res.setHeader('Content-Type', 'application/json')
       res.status(500).json({ error: 'Failed to generate OAuth link' })
     }
@@ -562,74 +559,100 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
   // Using /delete-user to avoid conflict with /invite/delete page route
   publicRouter.post('/delete-user', async (req, res) => {
     try {
-      const { authKey } = req.body
+      const { authKey, providerUserId: nuvioUserId, refreshToken: nuvioRefreshToken } = req.body;
 
-      if (!authKey) {
-        res.setHeader('Content-Type', 'application/json')
-        return res.status(400).json({ error: 'authKey is required' })
-      }
-
-      // Validate authKey and get email
-      const { validateStremioAuthKey } = require('../utils/stremio')
-      let stremioEmail = null
-      try {
-        const validation = await validateStremioAuthKey(authKey)
-        if (validation && validation.user && validation.user.email) {
-          stremioEmail = validation.user.email.toLowerCase().trim()
-        }
-      } catch (e) {
-        const msg = (e && (e.message || e.error || '')) || ''
-        const code = (e && e.code) || 0
-        res.setHeader('Content-Type', 'application/json')
-        if (code === 1 || /session does not exist/i.test(String(msg))) {
-          return res.status(401).json({ error: 'Invalid or expired Stremio auth key' })
-        }
-        return res.status(400).json({ error: 'Could not validate auth key' })
-      }
-
-      if (!stremioEmail) {
-        res.setHeader('Content-Type', 'application/json')
-        return res.status(400).json({ error: 'Could not retrieve email from Stremio account' })
-      }
-
-      // Clear Stremio addons using the OAuth-provided authKey (current valid session)
-      // Do this BEFORE finding/deleting users so we have a valid session
+      let userEmail = null
       let addonsCleared = false
-      try {
-        const { StremioAPIClient } = require('stremio-api-client')
-        // Use the authKey from OAuth (current valid session) to clear addons
-        // The authKey from OAuth is already plain text, no decryption needed
-        console.log(`🔄 Attempting to clear Stremio addons for email: ${stremioEmail}`)
-        const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKey })
-        
-        // Clear all addons
-        const { clearAddons } = require('../utils/addonHelpers')
-        await clearAddons(apiClient)
-        
-        // Verify addons were cleared
-        const verifyResult = await apiClient.request('addonCollectionGet', {})
-        const remainingAddons = verifyResult?.addons || []
-        if (Array.isArray(remainingAddons) && remainingAddons.length === 0) {
-          addonsCleared = true
-          console.log(`✅ Successfully cleared Stremio addons for email: ${stremioEmail}`)
-        } else {
-          console.warn(`⚠️  Addons may not have been fully cleared. Remaining: ${remainingAddons.length}`)
+
+      if (nuvioUserId) {
+        // --- Nuvio path ---
+        // Verify the caller owns this Nuvio account
+        if (!nuvioRefreshToken) {
+          res.setHeader('Content-Type', 'application/json')
+          return res.status(400).json({ error: 'Refresh token is required for Nuvio account deletion' })
         }
-      } catch (e) {
-        console.error('❌ Failed to clear Stremio addons during user deletion:', {
-          message: e.message,
-          stack: e.stack,
-          error: e,
-          authKeyLength: authKey ? authKey.length : 0
+        const { refreshNuvioToken, parseJwtPayload } = require('../providers/nuvioAuth')
+        const refreshResult = await refreshNuvioToken(nuvioRefreshToken)
+        const jwtPayload = parseJwtPayload(refreshResult.access_token)
+        if (!jwtPayload || jwtPayload.sub !== nuvioUserId) {
+          res.setHeader('Content-Type', 'application/json')
+          return res.status(403).json({ error: 'Token does not match the claimed user identity' })
+        }
+
+        // Find user by nuvioUserId to get their email
+        const nuvioUser = await prisma.user.findFirst({
+          where: { nuvioUserId },
+          select: { email: true, nuvioRefreshToken: true, accountId: true }
         })
-        // Continue with deletion even if addon clearing fails
-        // But log the full error so we can debug
+        if (!nuvioUser) {
+          res.setHeader('Content-Type', 'application/json')
+          return res.status(404).json({ error: 'No user found with this Nuvio account' })
+        }
+        userEmail = nuvioUser.email?.toLowerCase?.().trim()
+
+        // Try to clear Nuvio addons
+        try {
+          const { createNuvioProvider } = require('../providers/nuvio')
+          const refreshToken = nuvioRefreshToken || (nuvioUser.nuvioRefreshToken ? decrypt(nuvioUser.nuvioRefreshToken, { appAccountId: nuvioUser.accountId }) : null)
+          if (refreshToken) {
+            const provider = createNuvioProvider({ refreshToken, userId: nuvioUserId })
+            await provider.clearAddons()
+            addonsCleared = true
+            console.log(`✅ Successfully cleared Nuvio addons for user: ${userEmail}`)
+          }
+        } catch (e) {
+          console.error('❌ Failed to clear Nuvio addons during user deletion:', e?.message)
+        }
+      } else if (authKey) {
+        // --- Stremio path ---
+        const { validateStremioAuthKey } = require('../utils/stremio')
+        try {
+          const validation = await validateStremioAuthKey(authKey)
+          if (validation && validation.user && validation.user.email) {
+            userEmail = validation.user.email.toLowerCase().trim()
+          }
+        } catch (e) {
+          const msg = (e && (e.message || e.error || '')) || ''
+          const code = (e && e.code) || 0
+          res.setHeader('Content-Type', 'application/json')
+          if (code === 1 || /session does not exist/i.test(String(msg))) {
+            return res.status(401).json({ error: 'Invalid or expired auth key' })
+          }
+          return res.status(400).json({ error: 'Could not validate auth key' })
+        }
+
+        // Clear Stremio addons
+        try {
+          const { StremioAPIClient } = require('stremio-api-client')
+          console.log(`🔄 Attempting to clear Stremio addons for email: ${userEmail}`)
+          const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKey })
+          const { clearAddons } = require('../utils/addonHelpers')
+          await clearAddons(apiClient)
+          const verifyResult = await apiClient.request('addonCollectionGet', {})
+          const remainingAddons = verifyResult?.addons || []
+          if (Array.isArray(remainingAddons) && remainingAddons.length === 0) {
+            addonsCleared = true
+            console.log(`✅ Successfully cleared Stremio addons for email: ${userEmail}`)
+          } else {
+            console.warn(`⚠️  Addons may not have been fully cleared. Remaining: ${remainingAddons.length}`)
+          }
+        } catch (e) {
+          console.error('❌ Failed to clear Stremio addons during user deletion:', e?.message)
+        }
+      } else {
+        res.setHeader('Content-Type', 'application/json')
+        return res.status(400).json({ error: 'authKey or nuvioUserId is required' })
+      }
+
+      if (!userEmail) {
+        res.setHeader('Content-Type', 'application/json')
+        return res.status(400).json({ error: 'Could not retrieve email from provider account' })
       }
 
       // Find ALL users with this email (check all accounts since this is a public endpoint)
       const users = await prisma.user.findMany({
         where: {
-          email: stremioEmail
+          email: userEmail
         }
       })
 
@@ -888,23 +911,20 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
             // 5 min expiry
             oauthExpiresAt = new Date(Date.now() + 5 * 60 * 1000)
           } else {
-            return res.status(500).json({ 
-              error: 'Failed to generate OAuth link - Stremio API returned invalid response',
-              details: stremioData?.error?.message || 'Missing code or link in response'
+            return res.status(500).json({
+              error: 'Failed to generate OAuth link - Stremio API returned invalid response'
             })
           }
         } else {
           const errorText = await stremioResponse.text()
-          return res.status(500).json({ 
-            error: 'Failed to generate OAuth link from Stremio',
-            details: `HTTP ${stremioResponse.status}: ${errorText}`
+          console.error('Stremio OAuth link generation failed:', stremioResponse.status, errorText)
+          return res.status(500).json({
+            error: 'Failed to generate OAuth link from Stremio'
           })
         }
       } catch (error) {
-        return res.status(500).json({ 
-          error: 'Failed to generate OAuth link',
-          details: error?.message || 'Unknown error'
-        })
+        console.error('Failed to generate OAuth link:', error?.message)
+        return res.status(500).json({ error: 'Failed to generate OAuth link' })
       }
 
       await prisma.inviteRequest.update({
@@ -928,12 +948,23 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
   })
 
   publicRouter.post('/:inviteCode/complete', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
     try {
       const { inviteCode } = req.params
-      const { email, username, authKey, groupName } = req.body
+      const { email, username, authKey, groupName, providerType: reqProviderType, providerEmail: nuvioEmail, password: nuvioPassword, providerUserId: reqNuvioUserId, refreshToken: reqNuvioRefreshToken } = req.body;
+      const providerType = reqProviderType || 'stremio'
 
-      if (!email || !username || !authKey) {
-        return res.status(400).json({ error: 'Email, username, and authKey are required' })
+      if (providerType === 'nuvio') {
+        // Accept either OAuth (nuvioUserId + nuvioRefreshToken) or credentials (nuvioEmail + nuvioPassword)
+        const hasOAuth = reqNuvioUserId && reqNuvioRefreshToken
+        const hasCreds = nuvioEmail && nuvioPassword
+        if (!email || !username || (!hasOAuth && !hasCreds)) {
+          return res.status(400).json({ error: 'Email, username, and Nuvio credentials (OAuth or email/password) are required for Nuvio' })
+        }
+      } else {
+        if (!email || !username || !authKey) {
+          return res.status(400).json({ error: 'Email, username, and authKey are required' })
+        }
       }
 
       const invitation = await prisma.invitation.findUnique({
@@ -1011,25 +1042,64 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
       // group name priority: body > request > invitation > null
       const finalGroupName = groupName || request.groupName || invitation.groupName || null
 
-      // validate the stremio auth key and get email - this is required
-      let stremioEmail = null
-      try {
-        const validation = await validateStremioAuthKey(authKey)
-        if (validation && validation.user && validation.user.email) {
-          stremioEmail = validation.user.email.toLowerCase().trim()
+      // Validate provider credentials and get email
+      let providerEmail = null
+      let nuvioValidation = null
+      if (providerType === 'nuvio') {
+        if (reqNuvioUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(reqNuvioUserId)) {
+          return res.status(400).json({ error: 'Invalid Nuvio user ID format' })
         }
-      } catch (error) {
-        console.error('Failed to validate Stremio auth key:', error)
-        return res.status(400).json({ 
-          error: 'INVALID_AUTH_KEY',
-          message: 'Could not validate Stremio authentication. Please try again.'
-        })
+        if (reqNuvioUserId && reqNuvioRefreshToken) {
+          // OAuth path — verify token matches claimed identity
+          const { refreshNuvioToken, parseJwtPayload } = require('../providers/nuvioAuth')
+          const refreshResult = await refreshNuvioToken(reqNuvioRefreshToken)
+          const jwtPayload = parseJwtPayload(refreshResult.access_token)
+          if (!jwtPayload || jwtPayload.sub !== reqNuvioUserId) {
+            return res.status(403).json({ error: 'Token does not match the claimed user identity' })
+          }
+          nuvioValidation = {
+            user: { id: reqNuvioUserId, email: nuvioEmail || email },
+            tokens: { refreshToken: refreshResult.refresh_token || reqNuvioRefreshToken }
+          }
+          providerEmail = (nuvioEmail || email || '').toLowerCase().trim()
+        } else {
+          // Credentials path — validate with Nuvio
+          try {
+            const { validateNuvioCredentials } = require('../providers/nuvioAuth')
+            nuvioValidation = await validateNuvioCredentials(nuvioEmail, nuvioPassword)
+            if (nuvioValidation && nuvioValidation.user && nuvioValidation.user.email) {
+              providerEmail = nuvioValidation.user.email.toLowerCase().trim()
+            }
+          } catch (error) {
+            console.error('Failed to validate Nuvio credentials:', error?.message)
+            return res.status(400).json({
+              error: 'INVALID_AUTH_KEY',
+              message: 'Could not validate Nuvio authentication. Please try again.'
+            })
+          }
+        }
+      } else {
+        try {
+          const validation = await validateStremioAuthKey(authKey)
+          if (validation && validation.user && validation.user.email) {
+            providerEmail = validation.user.email.toLowerCase().trim()
+          }
+        } catch (error) {
+          console.error('Failed to validate Stremio auth key:', error?.message)
+          return res.status(400).json({
+            error: 'INVALID_AUTH_KEY',
+            message: 'Could not validate Stremio authentication. Please try again.'
+          })
+        }
       }
 
-      if (!stremioEmail) {
-        return res.status(400).json({ 
+      // Alias for backward compat in the email matching section below
+      const stremioEmail = providerEmail
+
+      if (!providerEmail) {
+        return res.status(400).json({
           error: 'EMAIL_NOT_AVAILABLE',
-          message: 'Could not retrieve email from Stremio account. Please try again.'
+          message: 'Could not retrieve email from provider account. Please try again.'
         })
       }
 
@@ -1048,14 +1118,14 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
           if (webhookUrl) {
             const embed = {
               title: `User ${request.username} used different emails`,
-              description: `The user has used different emails for the Stremio account and its request.`,
+              description: `The user has used different emails for the ${providerType === 'nuvio' ? 'Nuvio' : 'Stremio'} account and its request.`,
               color: 0xef4444, // Red color for error
               fields: [
                 { name: 'Username', value: formatCodeBlock(request.username), inline: true },
                 { name: 'Invite Code', value: formatCodeBlock(invitation.inviteCode), inline: true },
                 { name: 'Group', value: formatCodeBlock(request.groupName || invitation.groupName || 'No group'), inline: true },
                 { name: 'Request Email', value: formatCodeBlock(request.email), inline: true },
-                { name: 'Stremio Email', value: formatCodeBlock(stremioEmail), inline: true }
+                { name: `${providerType === 'nuvio' ? 'Nuvio' : 'Stremio'} Email`, value: formatCodeBlock(stremioEmail), inline: true }
               ],
               timestamp: new Date().toISOString()
             }
@@ -1065,8 +1135,8 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
               embed.footer = { text: `Syncio v${appVersion}` }
             }
 
-            // For email mismatch, we have the user data, try to get their avatar
-            const avatarUrl = await getUserAvatarUrl(user.username, user.email, user.colorIndex || 0)
+            // For email mismatch, use the request data for the avatar
+            const avatarUrl = await getUserAvatarUrl(request.username, request.email, 0)
 
             await postDiscord(webhookUrl, null, {
               embeds: [embed],
@@ -1079,20 +1149,21 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
         
         return res.status(400).json({ 
           error: 'EMAIL_MISMATCH',
-          message: 'The Stremio account email does not match the email used in your request'
+          message: 'The provider account email does not match the email used in your request'
         })
       }
 
       // Ensure email uniqueness across all accounts
       // If user exists in another account, delete it first
       const { ensureEmailUniqueness } = require('../utils/helpers/database')
-      await ensureEmailUniqueness(prisma, email, invitation.accountId)
+      await ensureEmailUniqueness(prisma, email, invitation.accountId, providerType)
 
-      // Check if user already exists in this account (after cleanup)
+      // Check if user already exists in this account with the same provider (after cleanup)
       const existingUser = await prisma.user.findFirst({
         where: {
           accountId: invitation.accountId,
-          email: email.trim().toLowerCase()
+          email: email.trim().toLowerCase(),
+          providerType
         }
       })
 
@@ -1105,8 +1176,20 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
         return res.status(409).json({ error: 'User is already registered to Syncio' })
       }
 
-      // encrypt and create the user
-      const encryptedAuthKey = encrypt(authKey, { appAccountId: invitation.accountId })
+      // encrypt and create the user credentials
+      let userCredentials = {}
+      if (providerType === 'nuvio') {
+        userCredentials = {
+          providerType: 'nuvio',
+          nuvioRefreshToken: encrypt(nuvioValidation.tokens.refreshToken, { appAccountId: invitation.accountId }),
+          nuvioUserId: nuvioValidation.user.id
+        }
+      } else {
+        userCredentials = {
+          providerType: 'stremio',
+          stremioAuthKey: encrypt(authKey, { appAccountId: invitation.accountId })
+        }
+      }
 
       let computedExpiresAt = null
       const now = new Date()
@@ -1132,7 +1215,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
           accountId: invitation.accountId,
           email: email.trim().toLowerCase(),
           username: username.trim(),
-          stremioAuthKey: encryptedAuthKey,
+          ...userCredentials,
           isActive: true,
           expiresAt: computedExpiresAt,
           inviteCode: invitation.inviteCode
@@ -1205,7 +1288,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
               try {
                 const { syncUserAddons } = require('./users')
                 const reqLike = { appAccountId: invitation.accountId, headers: {} }
-                const syncResult = await syncUserAddons(prisma, newUser.id, [], false, reqLike, decrypt, () => invitation.accountId, true)
+                const syncResult = await syncUserAddons(prisma, newUser.id, [], false, reqLike, decrypt, () => invitation.accountId, true, createProvider)
                 if (syncResult?.success) {
                   console.log('✅ User synced on join')
                 } else {
@@ -1294,7 +1377,7 @@ module.exports.createPublicRouter = ({ prisma, encrypt, assignUserToGroup, decry
         }
       })
     } catch (error) {
-      console.error('Error completing invite:', error)
+      console.error('Error completing invite:', error?.message)
       res.status(500).json({ error: 'Failed to complete invite' })
     }
   })

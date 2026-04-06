@@ -272,13 +272,14 @@ async function assignUserToGroup(userId, groupId, req) {
  * If a user with the same email exists in another account, delete it first
  * This ensures one email can only exist in one account at a time
  */
-async function ensureEmailUniqueness(prisma, email, targetAccountId) {
+async function ensureEmailUniqueness(prisma, email, targetAccountId, providerType) {
   const normalizedEmail = email.trim().toLowerCase()
   
-  // Find all users with this email (across all accounts)
+  // Find all users with this email and provider type (across all accounts)
   const existingUsers = await prisma.user.findMany({
     where: {
-      email: normalizedEmail
+      email: normalizedEmail,
+      ...(providerType ? { providerType } : {})
     },
     select: {
       id: true,

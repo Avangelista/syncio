@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { StremioAPIStore, StremioAPIClient } = require('stremio-api-client');
+const { makeCreateProvider } = require('./providers');
 const debug = require('./utils/debug');
 require('dotenv').config();
 
@@ -24,6 +25,7 @@ const addonsRouter = require('./routes/addons');
 const groupsRouter = require('./routes/groups');
 const usersRouter = require('./routes/users');
 const stremioRouter = require('./routes/stremio');
+const nuvioRouter = require('./routes/nuvio');
 const settingsRouter = require('./routes/settings');
 const externalApiRouter = require('./routes/externalApi');
 const debugRouter = require('./routes/debug');
@@ -102,6 +104,9 @@ const app = express();
 const prisma = new PrismaClient();
 console.log('Prisma client initialized:', !!prisma);
 
+// Create provider factory with token persistence support
+const createProvider = makeCreateProvider({ prisma, encrypt })
+
 // Use helper-provided getAccountId (account scoping rules centralized)
 const getAccountId = getAccountIdHelper
 
@@ -123,14 +128,51 @@ app.use(cors({
   credentials: true,
 }));
 
-// Rate limiting (disabled by default)
+// Prevent caching of Nuvio auth responses (before rate limiters so 429s are also no-store)
+app.use('/api/nuvio', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
+
+// Rate limiting
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'),
   max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '1000'),
   standardHeaders: true,
   legacyHeaders: false,
-  message: 'Too many requests from this IP, please try again later.',
+  handler: (req, res) => {
+    res.status(429).json({ error: 'Too many requests from this IP, please try again later.' })
+  },
 });
+app.use('/api', limiter);
+app.use('/invite', limiter);
+
+// Stricter rate limiting for auth endpoints
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  handler: (req, res) => {
+    res.status(429).json({ error: 'Too many authentication attempts, please try again later.' })
+  },
+});
+app.use('/api/nuvio/validate', authLimiter);
+app.use('/api/nuvio/connect', authLimiter);
+app.use('/api/nuvio/start-oauth', authLimiter);
+app.use('/api/nuvio/exchange-oauth', authLimiter);
+app.use('/api/nuvio/connect-authkey', authLimiter);
+// poll-oauth is a high-frequency status check (~3s interval), not an auth attempt —
+// it gets a dedicated limiter (100/15min) between the auth limiter and general API limiter.
+const pollLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  handler: (req, res) => {
+    res.status(429).json({ error: 'Too many polling requests, please try again later.' })
+  },
+});
+app.use('/api/nuvio/poll-oauth', pollLimiter);
+app.use('/api/public-library/authenticate', authLimiter);
+app.use('/invite/:code/complete', authLimiter);
+app.use('/invite/delete-user', authLimiter);
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -162,9 +204,10 @@ app.use('/api/groups', accountScopingMiddleware);
 app.use('/api/users', accountScopingMiddleware);
 app.use('/api/addons', accountScopingMiddleware);
 app.use('/api/stremio', accountScopingMiddleware);
+app.use('/api/nuvio', accountScopingMiddleware);
 
 // Cleanup middleware to restore prisma
-for (const base of ['/api/groups','/api/users','/api/addons','/api/stremio']) {
+for (const base of ['/api/groups','/api/users','/api/addons','/api/stremio','/api/nuvio']) {
   app.use(base, (req, res, next) => {
     res.on('finish', () => {
       if (req._restorePrisma) req._restorePrisma()
@@ -175,9 +218,10 @@ for (const base of ['/api/groups','/api/users','/api/addons','/api/stremio']) {
 
 // Mount routers
 app.use('/api/addons', addonsRouter({ prisma, getAccountId, decrypt, encrypt, getDecryptedManifestUrl, scopedWhere, AUTH_ENABLED, manifestHash, filterManifestByResources, filterManifestByCatalogs, manifestUrlHmac }));
-app.use('/api/groups', groupsRouter({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserToGroup, getDecryptedManifestUrl, manifestUrlHmac, decrypt }));
-app.use('/api/users', usersRouter({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, encrypt, parseAddonIds, parseProtectedAddons, getDecryptedManifestUrl, StremioAPIClient, StremioAPIStore, assignUserToGroup, debug, defaultAddons, canonicalizeManifestUrl, getAccountDek, getServerKey, aesGcmDecrypt, validateStremioAuthKey, manifestUrlHmac, manifestHash }));
+app.use('/api/groups', groupsRouter({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, assignUserToGroup, getDecryptedManifestUrl, manifestUrlHmac, decrypt, createProvider }));
+app.use('/api/users', usersRouter({ prisma, getAccountId, scopedWhere, AUTH_ENABLED, decrypt, encrypt, parseAddonIds, parseProtectedAddons, getDecryptedManifestUrl, StremioAPIClient, StremioAPIStore, assignUserToGroup, debug, defaultAddons, canonicalizeManifestUrl, getAccountDek, getServerKey, aesGcmDecrypt, validateStremioAuthKey, manifestUrlHmac, manifestHash, createProvider }));
 app.use('/api/stremio', stremioRouter({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, AUTH_ENABLED }));
+app.use('/api/nuvio', nuvioRouter({ prisma, getAccountId, encrypt, decrypt }));
 app.use('/api/settings', settingsRouter({ prisma, AUTH_ENABLED, getAccountDek, getDecryptedManifestUrl, getAccountId }));
 // External API (API key protected, account-scoped)
 app.use('/api/ext', externalApiRouter({
@@ -192,16 +236,16 @@ if (!AUTH_ENABLED) {
   app.use('/', debugRouter({ prisma, getDecryptedManifestUrl, getAccountId }));
 }
 app.use('/api/public-auth', publicAuthRouter({ prisma, getAccountId, AUTH_ENABLED, PRIVATE_AUTH_ENABLED, PRIVATE_AUTH_USERNAME, PRIVATE_AUTH_PASSWORD, DEFAULT_ACCOUNT_ID, issueAccessToken, issueRefreshToken, cookieName, isProdEnv, encrypt, decrypt, getDecryptedManifestUrl, scopedWhere, getAccountDek, decryptWithFallback, manifestUrlHmac, manifestHash, filterManifestByResources, filterManifestByCatalogs, parseCookies, JWT_SECRET }));
-app.use('/api/invitations', invitationsRouter({ prisma, getAccountId, AUTH_ENABLED, encrypt, decrypt, assignUserToGroup }));
-app.use('/invite', invitationsRouter.createPublicRouter({ prisma, encrypt, assignUserToGroup, decrypt }));
+app.use('/api/invitations', invitationsRouter({ prisma, getAccountId, AUTH_ENABLED, encrypt, decrypt, assignUserToGroup, createProvider }));
+app.use('/invite', invitationsRouter.createPublicRouter({ prisma, encrypt, assignUserToGroup, decrypt, createProvider }));
 // Public library router (no auth required)
 const { getCachedLibrary, setCachedLibrary } = require('./utils/libraryCache');
-app.use('/api/public-library', publicLibraryRouter({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibrary, setCachedLibrary }));
+app.use('/api/public-library', publicLibraryRouter({ prisma, DEFAULT_ACCOUNT_ID, encrypt, decrypt, getCachedLibrary, setCachedLibrary, createProvider }));
 
 // Error handling
 app.use((error, req, res, next) => {
   console.error('Unhandled error:', error);
-  res.status(500).json({ message: 'Internal server error', error: error.message });
+  res.status(500).json({ message: 'Internal server error' });
 });
 
 // Shutdown
@@ -240,14 +284,14 @@ scheduleSyncs(
 
   // Schedule user expiration cleanup (runs at midnight)
   try {
-    scheduleUserExpiration(prisma, decrypt, StremioAPIClient)
+    scheduleUserExpiration(prisma, decrypt, StremioAPIClient, createProvider)
   } catch (err) {
     console.error('⚠️ Failed to initialize user expiration scheduler:', err)
   }
 
   // Schedule activity monitor (checks for new watch activity every 5 minutes)
   try {
-    scheduleActivityMonitor(prisma, decrypt, getAccountId, AUTH_ENABLED)
+    scheduleActivityMonitor(prisma, decrypt, getAccountId, AUTH_ENABLED, createProvider)
   } catch (err) {
     console.error('⚠️ Failed to initialize activity monitor:', err)
   }
@@ -258,7 +302,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('🚀 Syncio (Database) running on port', PORT)
     console.log('📊 Health check: http://127.0.0.1:' + PORT + '/health')
     console.log('🔌 API endpoints: http://127.0.0.1:' + PORT + '/api/')
-    console.log('🎬 Stremio integration: ENABLED')
+    console.log('🎬 Provider integrations: ENABLED')
     console.log(`💾 Storage: ${storageLabel}`)
   })
 }

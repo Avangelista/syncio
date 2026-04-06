@@ -1,5 +1,5 @@
 // Activity monitor - checks for new watch activity and sends Discord notifications
-const { StremioAPIClient } = require('stremio-api-client')
+let createProvider = null
 const { postDiscord } = require('./notify')
 const { setCachedLibrary } = require('./libraryCache')
 
@@ -70,19 +70,25 @@ async function checkActivityForAccount(prisma, accountId, decrypt, getAccountId)
 
     const webhookUrl = syncCfg?.webhookUrl
 
-    // Get all active users with Stremio connections for this account
+    // Get all active users with Stremio or Nuvio connections for this account
     const users = await prisma.user.findMany({
       where: {
         accountId: accountId,
         isActive: true,
-        stremioAuthKey: { not: null }
+        OR: [
+          { stremioAuthKey: { not: null } },
+          { nuvioRefreshToken: { not: null } }
+        ]
       },
       select: {
         id: true,
         username: true,
         email: true,
         stremioAuthKey: true,
-        colorIndex: true
+        colorIndex: true,
+        providerType: true,
+        nuvioRefreshToken: true,
+        nuvioUserId: true
       }
     })
 
@@ -93,29 +99,29 @@ async function checkActivityForAccount(prisma, accountId, decrypt, getAccountId)
     try {
       const { processAccountMetrics } = require('./metricsProcessor')
       const { getCachedLibrary } = require('./libraryCache')
-      const { StremioAPIClient } = require('stremio-api-client')
-      
+
       // Helper function to get library for a user
-      // Always fetch fresh from Stremio for metrics processing to ensure we catch new items
+      // Always fetch fresh from provider for metrics processing to ensure we catch new items
       const getLibraryForUser = async (user) => {
         try {
           const mockReq = { appAccountId: accountId }
-          const authKeyPlain = decrypt(user.stremioAuthKey, mockReq)
-          const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain })
-          
-          const libraryItems = await apiClient.request('datastoreGet', {
-            collection: 'libraryItem',
-            ids: [],
-            all: true
-          })
-          
+          const provider = createProvider(user, { decrypt, req: mockReq })
+
+          if (!provider) {
+            console.warn(`[ActivityMonitor] Could not create provider for user ${user.id}`)
+            const cachedLibrary = getCachedLibrary(accountId, user.id)
+            return cachedLibrary || []
+          }
+
+          const libraryItems = await provider.getLibrary()
+
           const library = Array.isArray(libraryItems) ? libraryItems : (libraryItems?.result || libraryItems?.library || [])
-          
+
           // Update cache with fresh data
           if (Array.isArray(library) && library.length > 0) {
             setCachedLibrary(accountId, user.id, library)
           }
-          
+
           return library || []
         } catch (error) {
           console.warn(`[ActivityMonitor] Failed to fetch library for user ${user.id}:`, error.message)
@@ -136,6 +142,7 @@ async function checkActivityForAccount(prisma, accountId, decrypt, getAccountId)
 
     // Only process Discord notifications if webhook is configured
     if (!webhookUrl) return
+    const { getCachedLibrary: getLibraryCache } = require('./libraryCache')
 
     const now = Date.now()
     const cutoffTime = now - ACTIVITY_WINDOW_MS
@@ -150,23 +157,11 @@ async function checkActivityForAccount(prisma, accountId, decrypt, getAccountId)
     // Check each user's library for new activity
     for (const user of users) {
       try {
-        // Create a mock request object for decrypt
-        const mockReq = { appAccountId: accountId }
-        const authKeyPlain = decrypt(user.stremioAuthKey, mockReq)
-        const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain })
+        // Reuse cached library from metrics processing instead of fetching again
+        const libraryItems = getLibraryCache(accountId, user.id)
+        if (!libraryItems) continue
 
-        const libraryItems = await apiClient.request('datastoreGet', {
-          collection: 'libraryItem',
-          ids: [],
-          all: true
-        })
-
-        let library = Array.isArray(libraryItems) ? libraryItems : (libraryItems?.result || libraryItems?.library || [])
-        
-        // Cache the library data for metrics queries
-        if (Array.isArray(library) && library.length > 0) {
-          setCachedLibrary(accountId, user.id, library)
-        }
+        let library = Array.isArray(libraryItems) ? libraryItems : []
 
         // Check each item for recent activity
         for (const item of library) {
@@ -275,6 +270,30 @@ async function checkActivityForAccount(prisma, accountId, decrypt, getAccountId)
       const latestActivities = Array.from(latestByUser.values())
       await sendActivityNotification(webhookUrl, latestActivities)
     }
+
+    // After processing activities, precompute metrics for common periods
+    // This ensures both /users/metrics and /ext/metrics.json are immediately available
+    try {
+      const { setCachedMetrics } = require('./metricsCache')
+      const { buildMetricsForAccount } = require('./metricsBuilder')
+      const periods = ['1h', '12h', '1d', '3d', '7d', '30d', '90d', '1y', 'all']
+
+      for (const period of periods) {
+        try {
+          const metrics = await buildMetricsForAccount({
+            prisma,
+            accountId,
+            period,
+            decrypt
+          })
+          setCachedMetrics(accountId, period, metrics)
+        } catch (metricsError) {
+          console.warn(`[ActivityMonitor] Failed to precompute metrics for account ${accountId}, period ${period}:`, metricsError.message)
+        }
+      }
+    } catch (metricsError) {
+      console.warn(`[ActivityMonitor] Error during metrics precomputation for account ${accountId}:`, metricsError.message)
+    }
   } catch (error) {
     // Silently fail - don't spam logs
   }
@@ -381,27 +400,20 @@ async function fetchMetadata(itemId, itemType, videoId) {
         const episodePart = videoIdParts[videoIdParts.length - 1] // e.g., "4"
         episode = parseInt(episodePart, 10)
         
-        console.log(`[ActivityMonitor] Processing Kitsu ID: ${videoId}, kitsuId=${kitsuId}, episode=${episode}`)
-        
         // Fetch metadata from Kitsu API
         const kitsuData = await fetchKitsuMetadata(kitsuId)
         if (kitsuData) {
           // Default season to 1 when Kitsu returns null (common for anime without explicit season numbers)
           season = kitsuData.season !== null ? kitsuData.season : 1
-          console.log(`[ActivityMonitor] Kitsu metadata: title="${kitsuData.titleEn}", baseTitle="${kitsuData.baseTitle}", season=${season} (original: ${kitsuData.season})`)
           // Now we need to find the IMDb ID for the base title
           // Try to use itemId if it's an IMDb ID, otherwise we'll need to search
           if (itemId && itemId.startsWith('tt') && /^tt\d+$/.test(itemId)) {
             baseId = itemId
-            console.log(`[ActivityMonitor] Using IMDb ID from itemId: ${baseId}`)
           } else {
             // If itemId is not an IMDb ID, we'll try to use it anyway
             // The item should have an IMDb ID in its _id field
             baseId = itemId
-            console.log(`[ActivityMonitor] Using itemId as baseId: ${baseId}`)
           }
-        } else {
-          console.log(`[ActivityMonitor] Failed to fetch Kitsu metadata for kitsuId=${kitsuId}`)
         }
       }
     }
@@ -485,18 +497,12 @@ async function fetchMetadata(itemId, itemType, videoId) {
             // Skip this for Kitsu IDs since they don't match Cinemeta's format
             if (videoId && !videoId.startsWith('kitsu:')) {
               episodeData = meta.videos.find(v => v.id === videoId)
-              if (episodeData) {
-                console.log(`[ActivityMonitor] Found episode by video_id: ${videoId}`)
-              }
             }
             
             // If not found, try to match by constructing the episode ID format: "tt8080122:1:1"
             if (!episodeData && seasonNum !== undefined && episodeNum !== undefined && !isNaN(seasonNum) && !isNaN(episodeNum) && baseId) {
               const constructedId = `${baseId}:${seasonNum}:${episodeNum}`
               episodeData = meta.videos.find(v => v.id === constructedId)
-              if (episodeData) {
-                console.log(`[ActivityMonitor] Found episode by constructed ID: ${constructedId}`)
-              }
             }
             
             // If still not found, try to match by season and episode number directly
@@ -509,28 +515,14 @@ async function fetchMetadata(itemId, itemType, videoId) {
                 if (v.season === seasonNum && v.number === episodeNum) return true
                 return false
               })
-              if (episodeData) {
-                console.log(`[ActivityMonitor] Found episode by season/episode: S${seasonNum}E${episodeNum}`)
-              }
             }
-            
+
             if (episodeData) {
-              // Debug: Log what we found
-              console.log(`[ActivityMonitor] Episode found: id=${episodeData.id}, title="${episodeData.title}", hasTitle=${!!episodeData.title}, keys=${Object.keys(episodeData).join(',')}`)
-              
               result.episode = {
                 title: episodeData.title || episodeData.name || null,
                 released: episodeData.released || null,
                 overview: episodeData.overview || episodeData.description || null,
                 thumbnail: episodeData.thumbnail || null
-              }
-              
-              // Debug: Log what we're setting
-              console.log(`[ActivityMonitor] Setting episode title to: "${result.episode.title}"`)
-            } else {
-              console.log(`[ActivityMonitor] Episode NOT found: Looking for video_id=${videoId || 'none'}, season=${season}, episode=${episode}, baseId=${baseId}`)
-              if (meta.videos && meta.videos.length > 0) {
-                console.log(`[ActivityMonitor] Available video IDs (first 5): ${meta.videos.slice(0, 5).map(v => v.id).join(', ')}`)
               }
             }
           }
@@ -696,31 +688,6 @@ async function sendActivityNotification(webhookUrl, activities) {
         avatar_url: 'https://raw.githubusercontent.com/iamneur0/syncio/refs/heads/main/client/public/logo-black.png'
       })
     }
-
-
-    // After refreshing libraries, precompute metrics for common periods
-    // This ensures both /users/metrics and /ext/metrics.json are immediately available
-    try {
-      const { setCachedMetrics } = require('./metricsCache')
-      const { buildMetricsForAccount } = require('./metricsBuilder')
-      const periods = ['1h', '12h', '1d', '3d', '7d', '30d', '90d', '1y', 'all']
-      
-      for (const period of periods) {
-        try {
-          const metrics = await buildMetricsForAccount({
-            prisma,
-            accountId,
-            period,
-            decrypt
-          })
-          setCachedMetrics(accountId, period, metrics)
-        } catch (metricsError) {
-          console.warn(`[ActivityMonitor] Failed to precompute metrics for account ${accountId}, period ${period}:`, metricsError.message)
-        }
-      }
-    } catch (metricsError) {
-      console.warn(`[ActivityMonitor] Error during metrics precomputation for account ${accountId}:`, metricsError.message)
-    }
   } catch (error) {
     // Silently fail
   }
@@ -746,7 +713,8 @@ async function checkAllAccounts(prisma, decrypt, getAccountId, AUTH_ENABLED) {
   }
 }
 
-function scheduleActivityMonitor(prisma, decrypt, getAccountId, AUTH_ENABLED) {
+function scheduleActivityMonitor(prisma, decrypt, getAccountId, AUTH_ENABLED, configuredCreateProvider) {
+  if (configuredCreateProvider) createProvider = configuredCreateProvider
   clearActivityMonitor()
   
   // Run immediately on startup to update library database

@@ -4,7 +4,8 @@ import React, { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useTheme } from '@/contexts/ThemeContext'
 import { publicAuthAPI, publicLibraryAPI } from '@/services/api'
-import StremioOAuthCard from './StremioOAuthCard'
+import { StremioOAuthCard } from './StremioOAuthCard'
+import { NuvioOAuthCard } from './NuvioOAuthCard'
 import { Eye, EyeOff, LogIn, User, Lock, Settings, Users } from 'lucide-react'
 import Image from 'next/image'
 import toast from 'react-hot-toast'
@@ -25,7 +26,7 @@ export default function LoginPage({
   isPrivateAuth = false,
   initialMode
 }: LoginPageProps) {
-  const { isDark } = useTheme()
+  useTheme()
   const router = useRouter()
   const AUTH_ENABLED = process.env.NEXT_PUBLIC_AUTH_ENABLED === 'true'
   const [detectedPrivateAuth, setDetectedPrivateAuth] = useState<boolean | null>(null)
@@ -40,6 +41,7 @@ export default function LoginPage({
   const [isRegisterMode, setIsRegisterMode] = useState(false)
   const [showUuidNotice, setShowUuidNotice] = useState(false)
   const [showStremioLogin, setShowStremioLogin] = useState(false)
+  const [userProviderType, setUserProviderType] = useState<'stremio' | 'nuvio'>('stremio')
 
   // Detect mode: Public, Private (no auth), Private (with auth)
   // AUTH_ENABLED=true → Public
@@ -99,20 +101,16 @@ export default function LoginPage({
       } else {
         // User mode: use publicLibraryAPI
         try {
-          console.log('[LoginPage] Attempting to authenticate user with authKey:', authKey ? 'present' : 'missing')
           const result = await publicLibraryAPI.authenticate(authKey)
-          console.log('[LoginPage] Authenticate result:', JSON.stringify(result, null, 2))
           
           // Check if result indicates failure FIRST (before checking success)
           if (!result) {
-            console.error('[LoginPage] Authentication failed - no result')
             toast.error('Authentication failed: No response from server')
             throw new Error('AUTHENTICATION_FAILED')
           }
           
           // Check for error in result (even if status is 200) - THIS MUST BE CHECKED FIRST
           if (result.error) {
-            console.error('[LoginPage] Authentication failed - error in result:', result)
             const errorCode = result.error
             const errorMessage = result.message
             
@@ -133,39 +131,31 @@ export default function LoginPage({
           
           // Only proceed if we have success AND user data - DOUBLE CHECK
           if (!result.success) {
-            console.error('[LoginPage] Authentication failed - result.success is false:', result)
             toast.error('Authentication failed: Invalid response from server')
             throw new Error('AUTHENTICATION_FAILED')
           }
           
           if (!result.user) {
-            console.error('[LoginPage] Authentication failed - no user in result:', result)
             toast.error('Authentication failed: No user data received')
             throw new Error('AUTHENTICATION_FAILED')
           }
           
-          // FINAL CHECK - only show success if we have both success and user
-          console.log('[LoginPage] Authentication successful, user:', result.user.id)
           // Store in localStorage FIRST
           if (typeof window !== 'undefined') {
             const userData = {
               userId: result.user.id,
               authKey: authKey,
+              providerType: 'stremio',
               userInfo: result.user
             }
             localStorage.setItem('public-library-user', JSON.stringify(userData))
-            console.log('[LoginPage] Stored in localStorage:', userData)
           }
-          
-          // Small delay to ensure localStorage is written
-          await new Promise(resolve => setTimeout(resolve, 100))
           
           // Show success message first
           toast.success('Welcome! You\'re now connected.')
           
           // Then handle redirect - callback should handle it
           if (onUserLogin) {
-            console.log('[LoginPage] Calling onUserLogin callback')
             onUserLogin(result.user.id, authKey, result.user)
             // Callback handles redirect - it will use window.location.href
           } else {
@@ -173,14 +163,6 @@ export default function LoginPage({
             window.location.href = '/user/home'
           }
         } catch (authErr: any) {
-          // Handle authentication errors (403, 401, etc.)
-          console.error('[LoginPage] Authentication error caught:', {
-            message: authErr?.message,
-            response: authErr?.response,
-            status: authErr?.response?.status,
-            data: authErr?.response?.data
-          })
-          
           // If error was already handled (toast shown), don't show it again
           const errorData = authErr?.response?.data
           const errorCode = errorData?.error || authErr?.message
@@ -204,7 +186,6 @@ export default function LoginPage({
         }
       }
     } catch (err: any) {
-      console.error('Stremio login error (outer catch):', err)
       // Check if this is a user authentication error that was already handled
       const errorData = err?.response?.data
       const errorCode = errorData?.error
@@ -218,6 +199,59 @@ export default function LoginPage({
       }
     }
   }, [mode, onAdminLogin, onUserLogin, router])
+
+  const handleNuvioAuth = useCallback(async (data: { email: string; providerUserId: string; password?: string; refreshToken?: string }) => {
+    try {
+      const result = await publicLibraryAPI.authenticateNuvio(data.email, data.password, data.providerUserId, data.refreshToken)
+
+      if (result.error) {
+        const errorCode = result.error
+        const errorMessage = result.message
+        if (errorCode === 'USER_NOT_FOUND') {
+          toast.error(errorMessage || 'Your account is not registered with Syncio.', { duration: 6000 })
+        } else if (errorCode === 'USER_NOT_ACTIVE') {
+          toast.error(errorMessage || 'Your account has been disabled.', { duration: 6000 })
+        } else if (errorCode === 'USER_NOT_IN_GROUP') {
+          toast.error(errorMessage || 'Your account is not part of any Syncio group.', { duration: 6000 })
+        } else {
+          toast.error(errorMessage || 'Authentication failed')
+        }
+        return
+      }
+
+      if (!result.success || !result.user) {
+        toast.error('Authentication failed')
+        return
+      }
+
+      const nuvioAuthKey = result.authKey
+      if (!nuvioAuthKey) {
+        toast.error('Authentication failed: missing auth key')
+        return
+      }
+
+      if (typeof window !== 'undefined') {
+        const userData = {
+          userId: result.user.id,
+          authKey: nuvioAuthKey,
+          providerType: 'nuvio',
+          userInfo: result.user
+        }
+        localStorage.setItem('public-library-user', JSON.stringify(userData))
+      }
+
+      toast.success('Welcome! You\'re now connected.')
+
+      if (onUserLogin) {
+        onUserLogin(result.user.id, nuvioAuthKey, result.user)
+      } else {
+        window.location.href = '/user/home'
+      }
+    } catch (err: any) {
+      const errorMessage = err?.response?.data?.message || err?.message || 'Authentication failed'
+      toast.error(errorMessage)
+    }
+  }, [onUserLogin])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -325,7 +359,7 @@ export default function LoginPage({
             Welcome to Syncio
           </h1>
           <p className="text-xl theme-text-3">
-            {mode === 'admin' ? 'Enter your account credentials to continue' : 'Manage your Stremio library and addons'}
+            {mode === 'admin' ? 'Enter your account credentials to continue' : 'Manage your library and addons'}
           </p>
         </div>
 
@@ -437,15 +471,50 @@ export default function LoginPage({
 
           {mode === 'user' && (
             <div className="mb-6">
-              <p className="text-sm theme-text-3 mb-4 text-center">
-                Connect with Stremio to get started
-              </p>
-              <StremioOAuthCard
-                active={true}
-                autoStart={true}
-                onAuthKey={handleStremioAuth}
-                withContainer={false}
-              />
+              <div className="grid grid-cols-2 gap-2 w-full mb-4">
+                <button
+                  type="button"
+                  onClick={() => setUserProviderType('stremio')}
+                  className={`card card-selectable color-hover hover:shadow-lg transition-all py-2 text-center ${
+                    userProviderType === 'stremio' ? 'card-selected' : ''
+                  }`}
+                >
+                  <span className="text-sm font-medium">Stremio</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setUserProviderType('nuvio')}
+                  className={`card card-selectable color-hover hover:shadow-lg transition-all py-2 text-center ${
+                    userProviderType === 'nuvio' ? 'card-selected' : ''
+                  }`}
+                >
+                  <span className="text-sm font-medium">Nuvio</span>
+                </button>
+              </div>
+              {userProviderType === 'stremio' ? (
+                <>
+                  <p className="text-sm theme-text-3 mb-4 text-center">
+                    Connect with Stremio to get started
+                  </p>
+                  <StremioOAuthCard
+                    active={true}
+                    autoStart={true}
+                    onAuthKey={handleStremioAuth}
+                    withContainer={false}
+                  />
+                </>
+              ) : (
+                <>
+                  <p className="text-sm theme-text-3 mb-4 text-center">
+                    Sign in with your Nuvio account
+                  </p>
+                  <NuvioOAuthCard
+                    onAuth={handleNuvioAuth}
+                    autoStart={true}
+                    withContainer={false}
+                  />
+                </>
+              )}
             </div>
           )}
 
@@ -595,8 +664,7 @@ export default function LoginPage({
                             setError(response.message || 'Failed to generate UUID')
                           }
                         })
-                        .catch(err => {
-                          console.error('UUID generation error:', err)
+                        .catch(() => {
                           setError('Failed to generate UUID')
                         })
                     }

@@ -112,7 +112,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
         if (authKey && accId) {
           // Ensure email uniqueness across all accounts
           const { ensureEmailUniqueness } = require('../utils/helpers/database')
-          await ensureEmailUniqueness(prisma, email, accId)
+          await ensureEmailUniqueness(prisma, email, accId, 'stremio')
 
           // Encrypt
           const encryptedAuthKey = encrypt(authKey, req)
@@ -186,15 +186,6 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
   router.post('/connect', async (req, res) => {
     try {
       const { email, password, username, groupName } = req.body;
-      console.log(`🔍 POST /api/stremio/connect called with:`, { email, username, groupName })
-      console.log(`🔍 Password length:`, password ? password.length : 'undefined')
-      console.log(`🔍 Full request body:`, req.body)
-      // Redact any sensitive fields from logs
-      try {
-        const { password: _pw, authKey: _ak, ...rest } = (req.body || {})
-        console.log(`🔍 Request fields (redacted):`, rest)
-      } catch {}
-      
       if (!email || !password) {
         return res.status(400).json({ message: !email ? 'Invalid email' : 'Password is required' });
       }
@@ -212,14 +203,15 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
 
       // Ensure email uniqueness across all accounts
       const { ensureEmailUniqueness } = require('../utils/helpers/database')
-      await ensureEmailUniqueness(prisma, email, accountId)
+      await ensureEmailUniqueness(prisma, email, accountId, 'stremio')
 
-      // Check if user with this email already exists in this account
+      // Check if user with this email already exists in this account (scoped to stremio)
       let existingUser = null
       try {
         existingUser = await prisma.user.findFirst({
           where: {
             accountId,
+            providerType: 'stremio',
             OR: [
               { email: email },
               { username: finalUsername }
@@ -390,8 +382,6 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
 
       // Verify we have the required authentication data
       if (!authKey || !userData) {
-        console.log('Auth debug - authKey:', !!authKey, 'userData:', !!userData);
-        console.log('tempStorage keys:', Object.keys(tempStorage));
         return res.status(502).json({
           message: 'Failed to connect to Stremio',
           error: 'Authenticated but missing user data'
@@ -529,12 +519,13 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
       const accountId = getAccountId(req)
       const normalizedEmail = userInfo.email
 
-      // For invite-based creation, check if user with this email already exists first
+      // For invite-based creation, check if user with this email already exists first (scoped to stremio)
       if (normalizedEmail) {
         const existingUserByEmail = await prisma.user.findFirst({
           where: {
             accountId,
-            email: normalizedEmail
+            email: normalizedEmail,
+            providerType: 'stremio'
           }
         })
         if (existingUserByEmail) {
@@ -557,7 +548,7 @@ module.exports = ({ prisma, getAccountId, encrypt, decrypt, assignUserToGroup, A
       // Ensure email uniqueness across all accounts (if email provided)
       if (normalizedEmail) {
         const { ensureEmailUniqueness } = require('../utils/helpers/database')
-        await ensureEmailUniqueness(prisma, normalizedEmail, accountId)
+        await ensureEmailUniqueness(prisma, normalizedEmail, accountId, 'stremio')
       }
 
       // Check if user exists by username (shouldn't happen after uniqueness check, but just in case)

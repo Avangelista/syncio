@@ -1,4 +1,5 @@
 // User expiration cleanup system
+let createProvider = null
 const DAY_MS = 24 * 60 * 60 * 1000
 const MINUTE_MS = 60 * 1000
 
@@ -19,23 +20,24 @@ function nextMidnight(fromTs = Date.now()) {
 }
 
 /**
- * Reset user's Stremio addons (clear all addons)
+ * Reset user's addons (clear all addons) via provider factory
  */
 async function resetUserAddons(user, decrypt, StremioAPIClient) {
-  if (!user.stremioAuthKey || !user.isActive) {
-    return { success: false, error: 'User not connected to Stremio or inactive' }
+  if ((!user.stremioAuthKey && !user.nuvioRefreshToken) || !user.isActive) {
+    return { success: false, error: 'User not connected to a provider or inactive' }
   }
 
   try {
-    // Create a mock req object for decrypt function
     const mockReq = { appAccountId: user.accountId || null }
-    const authKeyPlain = decrypt(user.stremioAuthKey, mockReq)
-    const apiClient = new StremioAPIClient({ endpoint: 'https://api.strem.io', authKey: authKeyPlain })
+    const provider = createProvider(user, { decrypt, req: mockReq })
 
-    // Clear all addons
-    const { clearAddons } = require('./addonHelpers')
-    await clearAddons(apiClient)
-    return { success: true }
+    if (provider) {
+      const { clearAddons } = require('./addonHelpers')
+      await clearAddons(provider)
+      return { success: true }
+    }
+
+    return { success: false, error: 'Could not create provider' }
   } catch (error) {
     console.error(`⚠️  Error resetting addons for user ${user.id}:`, error?.message || error)
     return { success: false, error: error?.message || 'Failed to reset addons' }
@@ -70,7 +72,10 @@ async function deleteExpiredUsers(prisma, decrypt, StremioAPIClient) {
         email: true,
         expiresAt: true,
         stremioAuthKey: true,
-        isActive: true
+        isActive: true,
+        providerType: true,
+        nuvioRefreshToken: true,
+        nuvioUserId: true
       }
     })
 
@@ -96,7 +101,7 @@ async function deleteExpiredUsers(prisma, decrypt, StremioAPIClient) {
       for (const user of users) {
         try {
           // Reset user's addons before deletion
-          if (user.stremioAuthKey && user.isActive && decrypt && StremioAPIClient) {
+          if ((user.stremioAuthKey || user.nuvioRefreshToken) && user.isActive && decrypt) {
             const resetResult = await resetUserAddons(user, decrypt, StremioAPIClient)
             if (resetResult.success) {
               console.log(`🔄 Reset addons for expired user: ${user.username} (${user.email})`)
@@ -151,7 +156,8 @@ async function deleteExpiredUsers(prisma, decrypt, StremioAPIClient) {
 /**
  * Schedule user expiration cleanup to run at midnight (or every minute in debug mode)
  */
-function scheduleUserExpiration(prisma, decrypt, StremioAPIClient) {
+function scheduleUserExpiration(prisma, decrypt, StremioAPIClient, configuredCreateProvider) {
+  if (configuredCreateProvider) createProvider = configuredCreateProvider
   if (expirationTimer) {
     clearTimeout(expirationTimer)
     expirationTimer = null

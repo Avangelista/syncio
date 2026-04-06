@@ -299,6 +299,8 @@ export default function UserSettingsPage() {
   const [currentApiKey, setCurrentApiKey] = useState<string | null>(null)
   const autoGenAttemptedRef = useRef<boolean>(false)
   const [isSavingSettings, setIsSavingSettings] = useState(false)
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => { setMounted(true) }, [])
 
   // Load user settings on mount
   useQuery({
@@ -382,7 +384,7 @@ export default function UserSettingsPage() {
     }
   }
 
-  if (!userId) {
+  if (!userId || !mounted) {
     return null
   }
 
